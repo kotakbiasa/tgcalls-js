@@ -149,6 +149,11 @@ export class TgCallsClient {
     return this.join(chat, { kind: 'url', url: direct }, options);
   }
 
+  /** Resolve a YouTube/any yt-dlp-supported page URL to a direct media URL. */
+  async resolveYouTube(url: string): Promise<string | null> {
+    return resolveYouTube(url, this.opts);
+  }
+
   // ---------------------------------------------------------------- control
 
   /**
