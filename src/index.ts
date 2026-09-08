@@ -23,9 +23,10 @@ import type {
   MTProtoLike,
   StreamEndInfo,
   TgCallsOptions,
+  VideoOptions,
 } from './types.js';
 import { loadTl, loadEvents } from './tl.js';
-import { audioDescription, resolveYouTube } from './media.js';
+import { audioDescription, videoDescription, resolveYouTube } from './media.js';
 
 type AnyApi = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 
@@ -104,7 +105,7 @@ export class TgCallsClient {
 
   /**
    * Join the voice chat of `chat` and start streaming `source`.
-   * Audio-only: video stays stopped. Throws when the chat has no active call.
+   * Optionally share video from the same source via options.video.
    */
   async join(chat: ChatRef, source: AudioSource, options: JoinOptions = {}): Promise<JoinResult> {
     const chatId = await this.resolveChatId(chat);
@@ -118,12 +119,25 @@ export class TgCallsClient {
     // be sent in JoinGroupCall and its ssrc later reused for LeaveGroupCall.
     const joinParams = await this.ntg.createCall(chatId);
 
-    // Audio source set before the MTProto join so media flows immediately.
-    await this.ntg.setStreamSources(chatId, StreamMode.CAPTURE, {
+    // Media sources set before the MTProto join so media flows immediately.
+    const media: Record<string, unknown> = {
       microphone: audioDescription(source, this.opts),
-    });
+    };
+    if (options.video !== false && options.video !== undefined && source.kind !== 'shell') {
+      media.camera = videoDescription(
+        source as { kind: 'file'; path: string } | { kind: 'url'; url: string },
+        options.video,
+        this.opts,
+      );
+    }
+    await this.ntg.setStreamSources(chatId, StreamMode.CAPTURE, media);
 
-    const connParams = await this.joinGroupCall(chatId, inputCall, joinParams, options);
+    const connParams = await this.joinGroupCall(chatId, inputCall, joinParams, {
+      ...options,
+      // videoStopped=false only when we actually share camera video.
+      muted: options.muted === true,
+      videoStopped: !(options.video !== false && options.video !== undefined && source.kind !== 'shell'),
+    });
     await this.ntg.connect(chatId, connParams, false);
 
     const ssrc = extractSsrc(joinParams);
@@ -132,6 +146,8 @@ export class TgCallsClient {
       call: inputCall,
       ssrc,
       source,
+      videoActive: options.video !== false && options.video !== undefined && source.kind !== 'shell',
+      presentationActive: false,
       muted: options.muted === true,
       autoLeave: options.autoLeave !== false,
       joinedAt: Date.now(),
@@ -209,6 +225,8 @@ export class TgCallsClient {
       call: inputCall,
       ssrc,
       source: { kind: 'shell', command: '' }, // idle: no media source
+      videoActive: false,
+      presentationActive: false,
       muted: true,
       autoLeave: false,
       joinedAt: Date.now(),
@@ -283,6 +301,48 @@ export class TgCallsClient {
     });
     const active = this.calls.get(id);
     if (active) {active.source = source;}
+  }
+
+  /**
+   * Start screen/video presentation (screen share channel) for an active call.
+   * `source` must be file/url (ffmpeg-readable). RTC connection required —
+   * not available in STREAM/RTMP connection modes.
+   */
+  async startPresentation(chatId: ChatRef, source: { kind: 'file'; path: string } | { kind: 'url'; url: string }, video: VideoOptions = {}): Promise<void> {
+    const id = BigInt(chatId);
+    if (!this.calls.has(id)) {
+      throw new Error(`No active call in chat ${id}`);
+    }
+    // 1) native presentation join params — the returned payload goes in the
+    //    JoinGroupCallPresentation request itself.
+    const params = await this.ntg.initPresentation(id);
+    // 2) presentation video source
+    await this.ntg.setStreamSources(id, StreamMode.CAPTURE, {
+      screen: videoDescription(source, video, this.opts),
+    });
+    // 3) MTProto presentation join; connect on the presentation channel
+    const connParams = await this.joinPresentationCall(id, this.calls.get(id)?.call, params);
+    await this.ntg.connect(id, connParams, true);
+    const active = this.calls.get(id);
+    if (active) {active.presentationActive = true;}
+  }
+
+  /** Stop the presentation channel (screen share off, main call stays). */
+  async stopPresentation(chatId: ChatRef): Promise<void> {
+    const id = BigInt(chatId);
+    if (!this.calls.has(id)) {
+      throw new Error(`No active call in chat ${id}`);
+    }
+    try {
+      await this.ntg.stopPresentation(id);
+    } catch { /* may not be active */ }
+    try {
+      await this.client.invoke(new this.Api.phone.LeaveGroupCallPresentation({
+        call: this.calls.get(id)?.call,
+      }));
+    } catch { /* best-effort */ }
+    const active = this.calls.get(id);
+    if (active) {active.presentationActive = false;}
   }
 
   // -------------------------------------------------------------- internals
@@ -430,6 +490,28 @@ export class TgCallsClient {
     this.client.addEventHandler(this.updateCb, builder);
   }
 
+  private async joinPresentationCall(chatId: bigint, inputCall: unknown, presentationParams: string): Promise<string> {
+    this.installUpdateHandler();
+    this.pendingConnectionParams = null;
+    const result = await this.client.invoke(new this.Api.phone.JoinGroupCallPresentation({
+      call: inputCall,
+      params: new this.Api.DataJSON({ data: presentationParams }),
+    })) as { updates?: Array<Record<string, unknown>> } | undefined;
+    const inline = findConnectionParams(result?.updates ?? []);
+    if (inline !== null) {
+      return inline;
+    }
+    for (let i = 0; i < 15; i++) {
+      await sleep(200);
+      if (this.pendingConnectionParams !== null) {
+        const p = this.pendingConnectionParams;
+        this.pendingConnectionParams = null;
+        return p;
+      }
+    }
+    throw new Error('JoinGroupCallPresentation succeeded but no UpdateGroupCallConnection was received');
+  }
+
   /** Cleanup for consumers disposing the MTProto client. */
   dispose(): void {
     if (this.updateCb !== null && this.client.removeEventHandler !== undefined) {
@@ -511,4 +593,5 @@ export type {
   MTProtoLike,
   StreamEndInfo,
   TgCallsOptions,
+  VideoOptions,
 } from './types.js';

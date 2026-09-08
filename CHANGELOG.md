@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0 (2026-09-08)
+
+- Video sharing: `join(..., { video: {width, height, fps} })`
+- Screen share: `startPresentation()` / `stopPresentation()`
+- `joinIdle()` for stable idle presence
+
 ## 0.1.0 (2026-09-08)
 
 First release. Audio-only.
