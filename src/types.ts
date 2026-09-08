@@ -25,6 +25,16 @@ export type AudioSource =
   /** Full custom shell command that pipes s16le PCM 48k stereo to stdout. */
   | { kind: 'shell'; command: string };
 
+/** Video stream parameters. */
+export interface VideoOptions {
+  /** Output width in pixels (default 1280). */
+  width?: number;
+  /** Output height in pixels (default 720). */
+  height?: number;
+  /** Frames per second (default 24). */
+  fps?: number;
+}
+
 export interface JoinOptions {
   /** Join with the microphone muted (default false). */
   muted?: boolean;
@@ -34,6 +44,12 @@ export interface JoinOptions {
   allowCreate?: boolean;
   /** Invite hash when joining via a call invite link. */
   inviteHash?: string;
+  /** Share video from the same source (file/url) with these parameters. */
+  video?: VideoOptions | false;
+  /** Join the presentation (screen share) channel for this call. */
+  presentation?: boolean;
+  /** Internal: whether to mark video as stopped in the TL join request. */
+  videoStopped?: boolean;
 }
 
 export interface ActiveCall {
@@ -45,6 +61,10 @@ export interface ActiveCall {
   ssrc: number;
   /** The audio source this call was started with. */
   source: AudioSource;
+  /** True when the video camera channel is being shared from this client. */
+  videoActive: boolean;
+  /** True when the presentation (screen share) channel is active. */
+  presentationActive: boolean;
   muted: boolean;
   autoLeave: boolean;
   joinedAt: number;

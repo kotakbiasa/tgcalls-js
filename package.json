@@ -1,6 +1,6 @@
 {
   "name": "tgcalls-js",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "pytgcalls-style Telegram group call wrapper for Node.js (GramJS/teleproto + ntgcalls). Stream audio into Telegram voice chats.",
   "type": "module",
   "main": "dist/index.js",
