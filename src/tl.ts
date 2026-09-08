@@ -55,4 +55,34 @@ export function resetTlCache(): void {
   cached = null;
 }
 
+/**
+ * Resolve the `events` namespace (Raw builder etc.) of the loaded package.
+ * Returns null when unavailable (consumers can fall back to unfiltered handlers).
+ */
+export function loadEvents(): { Raw?: new (params: unknown) => unknown } | null {
+  if (eventsCache !== null) {return eventsCache;}
+  for (const name of ['telegram', 'teleproto']) {
+    try {
+      const req = createRequire(import.meta.url);
+      const mod = req(name) as { events?: Record<string, unknown> };
+      if (mod.events && typeof mod.events.Raw === 'function') {
+        eventsCache = mod.events as { Raw?: new (params: unknown) => unknown };
+        return eventsCache;
+      }
+      // Some packages expose it as a subpath instead.
+      const rawMod = req(`${name}/events/Raw.js`) as { Raw?: unknown };
+      if (rawMod && typeof rawMod.Raw === 'function') {
+        eventsCache = { Raw: rawMod.Raw as new (params: unknown) => unknown };
+        return eventsCache;
+      }
+    } catch {
+      /* probe next */
+    }
+  }
+  eventsCache = {};
+  return eventsCache;
+}
+
+let eventsCache: { Raw?: new (params: unknown) => unknown } | null = null;
+
 export type { AnyApi };
