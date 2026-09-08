@@ -24,7 +24,7 @@ import type {
   StreamEndInfo,
   TgCallsOptions,
 } from './types.js';
-import { loadTl } from './tl.js';
+import { loadTl, loadEvents } from './tl.js';
 import { audioDescription, resolveYouTube } from './media.js';
 
 type AnyApi = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -344,13 +344,25 @@ export class TgCallsClient {
         this.pendingConnectionParams = u.params.data;
       }
     };
-    this.client.addEventHandler(this.updateCb, { builds: ['UpdateGroupCallConnection'] });
+    // teleproto/GramJS dispatch calls builder.resolve()/build()/filter().
+    // Use the package's Raw builder when resolvable; otherwise a minimal
+    // compatible builder that passes every raw update through.
+    const events = loadEvents();
+    const builder = events?.Raw
+      ? new events.Raw({ types: [this.Api.UpdateGroupCallConnection] })
+      : {
+          resolved: true,
+          async resolve() { /* nothing to resolve */ },
+          build: (e: unknown) => {return e;},
+          filter: (e: unknown) => {return e;},
+        };
+    this.client.addEventHandler(this.updateCb, builder);
   }
 
   /** Cleanup for consumers disposing the MTProto client. */
   dispose(): void {
     if (this.updateCb !== null && this.client.removeEventHandler !== undefined) {
-      this.client.removeEventHandler(this.updateCb, { builds: ['UpdateGroupCallConnection'] });
+      this.client.removeEventHandler(this.updateCb, {});
       this.updateCb = null;
     }
     this.calls.clear();
@@ -417,7 +429,7 @@ function markedIdFromEntity(entity: unknown): bigint | undefined {
   return undefined;
 }
 
-export { loadTl, resetTlCache } from './tl.js';
+export { loadTl, resetTlCache, loadEvents } from './tl.js';
 export { resolveYouTube, pcmCommand, audioDescription } from './media.js';
 export type {
   ActiveCall,

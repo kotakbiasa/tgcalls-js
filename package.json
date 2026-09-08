@@ -10,6 +10,7 @@
   },
   "scripts": {
     "build": "tsc",
+    "prepare": "npm run build",
     "smoke": "node smoke.mjs",
     "prepublishOnly": "npm run build"
   },
