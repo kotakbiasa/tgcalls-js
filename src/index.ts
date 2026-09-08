@@ -154,6 +154,69 @@ export class TgCallsClient {
     return resolveYouTube(url, this.opts);
   }
 
+  /**
+   * Join a voice chat WITHOUT streaming audio (idle presence).
+   *
+   * On UDP-restricted hosts the regular RTC join gets ICE-timeout-kicked by
+   * Telegram after ~25s. Proven-stable alternative: ensure the call exists as
+   * an RTMP-stream call (CreateGroupCall rtmpStream) and join muted with no
+   * local sources — the server keeps a broadcaster in the call indefinitely.
+   */
+  async joinIdle(chat: ChatRef, options: JoinOptions = {}): Promise<JoinResult> {
+    const chatId = await this.resolveChatId(chat);
+    if (this.calls.has(chatId)) {
+      throw new Error(`Already in a call in chat ${chatId} — leave() first`);
+    }
+
+    let inputCall = await this.getGroupCall(chatId, false).catch(() => null);
+    if (inputCall === null) {
+      if (options.allowCreate !== true) {
+        throw new Error('No active voice chat in this chat. Start one first, or pass allowCreate: true.');
+      }
+      await this.getGroupCall(chatId, true); // creates (rtmpStream) and returns it
+      inputCall = await this.getGroupCall(chatId, false);
+    }
+
+    const joinParams = await this.ntg.createCall(chatId);
+    this.installUpdateHandler();
+    this.pendingConnectionParams = null;
+    const result = await this.client.invoke(new this.Api.phone.JoinGroupCall({
+      call: inputCall,
+      params: new this.Api.DataJSON({ data: joinParams }),
+      muted: true,
+      videoStopped: true,
+      joinAs: new this.Api.InputPeerSelf(),
+      ...(options.inviteHash !== undefined ? { inviteHash: options.inviteHash } : {}),
+    })) as { updates?: Array<Record<string, unknown>> } | undefined;
+    let connParams = findConnectionParams(result?.updates ?? []);
+    if (connParams === null) {
+      for (let i = 0; i < 15 && connParams === null; i++) {
+        await sleep(200);
+        if (this.pendingConnectionParams !== null) {
+          connParams = this.pendingConnectionParams;
+          this.pendingConnectionParams = null;
+        }
+      }
+    }
+    if (connParams === null) {
+      throw new Error('JoinGroupCall succeeded but no UpdateGroupCallConnection was received');
+    }
+    await this.ntg.connect(chatId, connParams, false);
+
+    const ssrc = extractSsrc(joinParams);
+    this.calls.set(chatId, {
+      chatId,
+      call: inputCall,
+      ssrc,
+      source: { kind: 'shell', command: '' }, // idle: no media source
+      muted: true,
+      autoLeave: false,
+      joinedAt: Date.now(),
+    });
+    this.wireNative();
+    return { chatId, call: inputCall, ssrc };
+  }
+
   // ---------------------------------------------------------------- control
 
   /**
@@ -288,6 +351,9 @@ export class TgCallsClient {
         peer: chatId,
         randomId: Math.floor(Math.random() * 2 ** 31),
         title: 'Voice Chat',
+        // rtmpStream=true: enables the stable idle-join path (joinIdle) on
+        // UDP-restricted hosts; regular audio joins still work on open hosts.
+        rtmpStream: true,
       }));
       await sleep(700);
       const full2 = (await this.client.invoke(
