@@ -316,14 +316,14 @@ export class TgCallsClient {
     // 1) native presentation join params — the returned payload goes in the
     //    JoinGroupCallPresentation request itself.
     const params = await this.ntg.initPresentation(id);
-    // 2) presentation video source
+    const active = this.calls.get(id);
     await this.ntg.setStreamSources(id, StreamMode.CAPTURE, {
+      ...(active?.source ? { microphone: audioDescription(active.source, this.opts) } : {}),
       screen: videoDescription(source, video, this.opts),
     });
     // 3) MTProto presentation join; connect on the presentation channel
     const connParams = await this.joinPresentationCall(id, this.calls.get(id)?.call, params);
     await this.ntg.connect(id, connParams, true);
-    const active = this.calls.get(id);
     if (active) {active.presentationActive = true;}
   }
 
