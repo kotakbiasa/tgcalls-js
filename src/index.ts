@@ -492,7 +492,7 @@ export class TgCallsClient {
       call: inputCall,
       params: new this.Api.DataJSON({ data: joinParams }),
       muted: options.muted === true,
-      videoStopped: true,
+      videoStopped: options.videoStopped ?? true,
       joinAs: new this.Api.InputPeerSelf(),
       ...(options.inviteHash !== undefined ? { inviteHash: options.inviteHash } : {}),
     })) as { updates?: Array<Record<string, unknown>> } | undefined;
