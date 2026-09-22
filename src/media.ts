@@ -61,6 +61,9 @@ export function videoDescription(
 }
 
 function shellQuote(s: string): string {
+  if (process.platform === 'win32') {
+    return `"${s.replace(/"/g, '')}"`;
+  }
   if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(s)) {
     return s;
   }
