@@ -24,9 +24,10 @@ import type {
   StreamEndInfo,
   TgCallsOptions,
   VideoOptions,
+  VideoQuality,
 } from './types.js';
 import { loadTl, loadEvents } from './tl.js';
-import { audioDescription, videoDescription, resolveYouTube } from './media.js';
+import { audioDescription, videoDescription, resolveYouTube, probeVideo } from './media.js';
 
 type AnyApi = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 
@@ -124,9 +125,12 @@ export class TgCallsClient {
       microphone: audioDescription(source, this.opts),
     };
     if (options.video !== false && options.video !== undefined && source.kind !== 'shell') {
+      const srcPath = source.kind === 'file' ? source.path : source.url;
+      const targetOpts = typeof options.video === 'object' ? options.video : {};
+      const probed = await probeVideo(srcPath, this.opts, targetOpts);
       media.camera = videoDescription(
         source as { kind: 'file'; path: string } | { kind: 'url'; url: string },
-        options.video,
+        { ...probed, ...targetOpts, width: probed.width, height: probed.height, fps: probed.fps },
         this.opts,
       );
     }
@@ -317,9 +321,18 @@ export class TgCallsClient {
     //    JoinGroupCallPresentation request itself.
     const params = await this.ntg.initPresentation(id);
     const active = this.calls.get(id);
+    const srcPath = source.kind === 'file' ? source.path : source.url;
+    const probed = await probeVideo(srcPath, this.opts, video);
+    const videoOpts: VideoOptions = {
+      ...probed,
+      ...video,
+      width: probed.width,
+      height: probed.height,
+      fps: probed.fps,
+    };
     await this.ntg.setStreamSources(id, StreamMode.CAPTURE, {
       ...(active?.source ? { microphone: audioDescription(active.source, this.opts) } : {}),
-      screen: videoDescription(source, video, this.opts),
+      screen: videoDescription(source, videoOpts, this.opts),
     });
     // 3) MTProto presentation join; connect on the presentation channel
     const connParams = await this.joinPresentationCall(id, this.calls.get(id)?.call, params);
@@ -629,7 +642,8 @@ function markedIdFromEntity(entity: unknown): bigint | undefined {
 }
 
 export { loadTl, resetTlCache, loadEvents } from './tl.js';
-export { resolveYouTube, pcmCommand, audioDescription } from './media.js';
+export { resolveYouTube, pcmCommand, audioDescription, videoDescription, probeVideo } from './media.js';
+export { VideoQuality } from './types.js';
 export type {
   ActiveCall,
   AudioSource,
