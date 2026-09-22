@@ -43,12 +43,12 @@ export function videoDescription(
   const ffmpeg = opts.ffmpegPath ?? 'ffmpeg';
   const width = video.width ?? 1280;
   const height = video.height ?? 720;
-  const fps = video.fps ?? 24;
+  const fps = video.fps ?? 30;
   let input: string;
   if (source.kind === 'file') {
-    input = `${ffmpeg} -i ${shellQuote(source.path)} -loglevel panic -f rawvideo -r ${fps} -pix_fmt yuv420p -vf scale=${width}:${height} pipe:1`;
+    input = `${ffmpeg} -re -i ${shellQuote(source.path)} -loglevel panic -f rawvideo -r ${fps} -pix_fmt yuv420p -vf scale=${width}:${height}:flags=lanczos pipe:1`;
   } else {
-    input = `${ffmpeg} -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 2 -i ${shellQuote(source.url)} -loglevel panic -f rawvideo -r ${fps} -pix_fmt yuv420p -vf scale=${width}:${height} pipe:1`;
+    input = `${ffmpeg} -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 2 -re -i ${shellQuote(source.url)} -loglevel panic -f rawvideo -r ${fps} -pix_fmt yuv420p -vf scale=${width}:${height}:flags=lanczos pipe:1`;
   }
   return {
     mediaSource: MediaSource.SHELL,
