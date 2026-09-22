@@ -396,30 +396,76 @@ export class TgCallsClient {
   }
 
   private async getGroupCall(chatId: bigint, allowCreate: boolean): Promise<unknown> {
-    const full = (await this.client.invoke(
-      new this.Api.channels.GetFullChannel({ channel: chatId }),
-    )) as { fullChat?: { call?: { id: unknown; accessHash: unknown } } | undefined };
-    const call = full.fullChat?.call;
+    let peer: unknown = chatId;
+    let channelInput: unknown = chatId;
+    let isBasicChat = false;
+
+    const clientAny = this.client as any;
+    if (clientAny.getInputEntity) {
+      try {
+        const inputEntity = await clientAny.getInputEntity(chatId);
+        if (inputEntity) {
+          peer = inputEntity;
+          if (inputEntity.className === 'InputPeerChannel' || (inputEntity as any).channelId !== undefined) {
+            channelInput = new this.Api.InputChannel({
+              channelId: (inputEntity as any).channelId,
+              accessHash: (inputEntity as any).accessHash,
+            });
+          } else if (inputEntity.className === 'InputPeerChat' || (inputEntity as any).chatId !== undefined) {
+            isBasicChat = true;
+          }
+        }
+      } catch {
+        /* fallback to chatId */
+      }
+    }
+
+    const fetchCall = async () => {
+      if (isBasicChat && this.Api.messages?.GetFullChat) {
+        try {
+          const rawId = typeof chatId === 'bigint' && chatId < 0n ? -chatId : chatId;
+          const full = (await this.client.invoke(
+            new this.Api.messages.GetFullChat({ chatId: (peer as any).chatId || rawId }),
+          )) as { fullChat?: { call?: { id: unknown; accessHash: unknown } } | undefined };
+          return full.fullChat?.call;
+        } catch { /* ignore */ }
+      }
+      try {
+        const full = (await this.client.invoke(
+          new this.Api.channels.GetFullChannel({ channel: channelInput }),
+        )) as { fullChat?: { call?: { id: unknown; accessHash: unknown } } | undefined };
+        return full.fullChat?.call;
+      } catch (err) {
+        if (this.Api.messages?.GetFullChat) {
+          try {
+            const rawId = typeof chatId === 'bigint' && chatId < 0n ? -chatId : chatId;
+            const full = (await this.client.invoke(
+              new this.Api.messages.GetFullChat({ chatId: rawId }),
+            )) as { fullChat?: { call?: { id: unknown; accessHash: unknown } } | undefined };
+            return full.fullChat?.call;
+          } catch { /* ignore */ }
+        }
+        throw err;
+      }
+    };
+
+    const call = await fetchCall().catch(() => undefined);
     if (call) {
       return new this.Api.InputGroupCall({
         id: asBigInt0(call.id),
         accessHash: asBigInt0(call.accessHash),
       });
     }
+
     if (allowCreate) {
       await this.client.invoke(new this.Api.phone.CreateGroupCall({
-        peer: chatId,
+        peer,
         randomId: Math.floor(Math.random() * 2 ** 31),
         title: 'Voice Chat',
-        // rtmpStream=true: enables the stable idle-join path (joinIdle) on
-        // UDP-restricted hosts; regular audio joins still work on open hosts.
-        rtmpStream: true,
+        rtmpStream: false,
       }));
-      await sleep(700);
-      const full2 = (await this.client.invoke(
-        new this.Api.channels.GetFullChannel({ channel: chatId }),
-      )) as { fullChat?: { call?: { id: unknown; accessHash: unknown } } | undefined };
-      const call2 = full2.fullChat?.call;
+      await sleep(1000);
+      const call2 = await fetchCall().catch(() => undefined);
       if (call2) {
         return new this.Api.InputGroupCall({
           id: asBigInt0(call2.id),
