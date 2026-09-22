@@ -32,8 +32,106 @@ export function audioDescription(source: AudioSource, opts: TgCallsOptions) {
 }
 
 /**
- * Build the ntgcalls camera description (rawvideo yuv420p via ffmpeg),
- * mirroring pytgcalls' default video pipeline.
+ * Probe a video file or direct URL to extract original dimensions and frame rate,
+ * calculating proportional target dimensions (even integers for YUV420p).
+ * Matches pytgcalls ffmpeg.py check_stream behavior.
+ */
+export async function probeVideo(
+  filePathOrUrl: string,
+  opts: TgCallsOptions = { client: {} as never },
+  target: VideoOptions = {},
+): Promise<{ width: number; height: number; fps: number }> {
+  const ffprobe = opts.ffprobePath ?? 'ffprobe';
+  return new Promise((resolve) => {
+    const args = [
+      '-v', 'error',
+      '-show_entries', 'stream=width,height,r_frame_rate,codec_type',
+      '-of', 'json',
+      filePathOrUrl,
+    ];
+    const proc = spawn(ffprobe, args, { stdio: ['ignore', 'pipe', 'ignore'] });
+    let out = '';
+    proc.stdout.on('data', (d: Buffer) => { out += d.toString(); });
+
+    const fallback = () => {
+      const w = target.width ?? 640;
+      const h = target.height ?? 360;
+      const fps = target.fps ?? 25;
+      resolve({
+        width: w % 2 !== 0 ? w - 1 : w,
+        height: h % 2 !== 0 ? h - 1 : h,
+        fps,
+      });
+    };
+
+    const timer = setTimeout(() => {
+      proc.kill();
+      fallback();
+    }, 7000);
+
+    proc.on('close', (code) => {
+      clearTimeout(timer);
+      if (code !== 0) {
+        return fallback();
+      }
+      try {
+        const data = JSON.parse(out) as {
+          streams?: Array<{
+            codec_type?: string;
+            width?: number;
+            height?: number;
+            r_frame_rate?: string;
+          }>;
+        };
+        const vStream = data.streams?.find((s) => s.codec_type === 'video');
+        if (!vStream || !vStream.width || !vStream.height) {
+          return fallback();
+        }
+
+        const origW = Number(vStream.width);
+        const origH = Number(vStream.height);
+        const maxW = target.width ?? 1280;
+        const maxH = target.height ?? 720;
+        const ratio = origW / origH;
+
+        let newW = Math.min(origW, maxW);
+        let newH = Math.floor(newW / ratio);
+
+        if (newH > maxH && target.adjustByHeight !== false) {
+          newH = maxH;
+          newW = Math.floor(newH * ratio);
+        }
+
+        // Even dimensions required for YUV420p
+        newW = newW % 2 !== 0 ? newW - 1 : newW;
+        newH = newH % 2 !== 0 ? newH - 1 : newH;
+
+        let fps = target.fps ?? 30;
+        if (vStream.r_frame_rate && typeof vStream.r_frame_rate === 'string') {
+          const parts = vStream.r_frame_rate.split('/');
+          if (parts.length === 2 && Number(parts[1]) > 0) {
+            const parsedFps = Math.round(Number(parts[0]) / Number(parts[1]));
+            if (parsedFps > 0 && parsedFps <= 30) {
+              fps = parsedFps;
+            }
+          }
+        }
+        resolve({ width: newW, height: newH, fps });
+      } catch {
+        fallback();
+      }
+    });
+
+    proc.on('error', () => {
+      clearTimeout(timer);
+      fallback();
+    });
+  });
+}
+
+/**
+ * Build the ntgcalls camera/screen description (rawvideo yuv420p via ffmpeg),
+ * mirroring pytgcalls' exact ffmpeg pipeline without -re.
  */
 export function videoDescription(
   source: Exclude<AudioSource, { kind: 'shell' }>,
@@ -41,14 +139,14 @@ export function videoDescription(
   opts: TgCallsOptions,
 ) {
   const ffmpeg = opts.ffmpegPath ?? 'ffmpeg';
-  const width = video.width ?? 1280;
-  const height = video.height ?? 720;
-  const fps = video.fps ?? 30;
+  const width = video.width ? (video.width % 2 !== 0 ? video.width - 1 : video.width) : 640;
+  const height = video.height ? (video.height % 2 !== 0 ? video.height - 1 : video.height) : 360;
+  const fps = video.fps ?? 25;
   let input: string;
   if (source.kind === 'file') {
-    input = `${ffmpeg} -re -i ${shellQuote(source.path)} -loglevel panic -f rawvideo -r ${fps} -pix_fmt yuv420p -vf scale=${width}:${height}:flags=lanczos pipe:1`;
+    input = `${ffmpeg} -i ${shellQuote(source.path)} -loglevel panic -f rawvideo -r ${fps} -pix_fmt yuv420p -vf scale=${width}:${height} pipe:1`;
   } else {
-    input = `${ffmpeg} -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 2 -re -i ${shellQuote(source.url)} -loglevel panic -f rawvideo -r ${fps} -pix_fmt yuv420p -vf scale=${width}:${height}:flags=lanczos pipe:1`;
+    input = `${ffmpeg} -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 2 -i ${shellQuote(source.url)} -loglevel panic -f rawvideo -r ${fps} -pix_fmt yuv420p -vf scale=${width}:${height} pipe:1`;
   }
   return {
     mediaSource: MediaSource.SHELL,

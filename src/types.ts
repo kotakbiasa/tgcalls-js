@@ -27,13 +27,25 @@ export type AudioSource =
 
 /** Video stream parameters. */
 export interface VideoOptions {
-  /** Output width in pixels (default 1280). */
+  /** Output width in pixels (default 640 or auto-probed). */
   width?: number;
-  /** Output height in pixels (default 720). */
+  /** Output height in pixels (default 360 or auto-probed). */
   height?: number;
-  /** Frames per second (default 24). */
+  /** Frames per second (default 25 or auto-probed). */
   fps?: number;
+  /** Adjust by height if computed height exceeds max (default true, matching pytgcalls). */
+  adjustByHeight?: boolean;
 }
+
+/** Predefined video quality profiles matching pytgcalls. */
+export const VideoQuality = {
+  UHD_4K: { width: 3840, height: 2160, fps: 60 },
+  QHD_2K: { width: 2560, height: 1440, fps: 60 },
+  FHD_1080p: { width: 1920, height: 1080, fps: 60 },
+  HD_720p: { width: 1280, height: 720, fps: 30 },
+  SD_480p: { width: 854, height: 480, fps: 30 },
+  SD_360p: { width: 640, height: 360, fps: 20 },
+} as const;
 
 export interface JoinOptions {
   /** Join with the microphone muted (default false). */
@@ -83,6 +95,8 @@ export interface TgCallsOptions {
   Api?: unknown;
   /** ffmpeg binary (default "ffmpeg"). */
   ffmpegPath?: string;
+  /** ffprobe binary (default "ffprobe"). */
+  ffprobePath?: string;
   /** yt-dlp binary for joinYouTube() (default "yt-dlp"). */
   ytDlpPath?: string;
 }
