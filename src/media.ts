@@ -12,9 +12,9 @@ export function pcmCommand(source: AudioSource, opts: TgCallsOptions): string {
   const ffmpeg = opts.ffmpegPath ?? 'ffmpeg';
   switch (source.kind) {
     case 'file':
-      return `${ffmpeg} -i ${shellQuote(source.path)} -loglevel panic -f s16le -ac 2 -ar 48000 pipe:1`;
+      return `${ffmpeg} -vn -i ${shellQuote(source.path)} -loglevel panic -f s16le -ac 2 -ar 48000 pipe:1`;
     case 'url':
-      return `${ffmpeg} -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 2 -i ${shellQuote(source.url)} -loglevel panic -f s16le -ac 2 -ar 48000 pipe:1`;
+      return `${ffmpeg} -vn -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 2 -i ${shellQuote(source.url)} -loglevel panic -f s16le -ac 2 -ar 48000 pipe:1`;
     case 'shell':
       return source.command;
   }
@@ -54,9 +54,9 @@ export async function probeVideo(
     proc.stdout.on('data', (d: Buffer) => { out += d.toString(); });
 
     const fallback = () => {
-      const w = target.width ?? 640;
-      const h = target.height ?? 360;
-      const fps = target.fps ?? 25;
+      const w = target.width ?? 1280;
+      const h = target.height ?? 720;
+      const fps = target.fps ?? 30;
       resolve({
         width: w % 2 !== 0 ? w - 1 : w,
         height: h % 2 !== 0 ? h - 1 : h,
@@ -107,7 +107,7 @@ export async function probeVideo(
         newH = newH % 2 !== 0 ? newH - 1 : newH;
 
         let fps = target.fps ?? 30;
-        if (vStream.r_frame_rate && typeof vStream.r_frame_rate === 'string') {
+        if (!target.fps && vStream.r_frame_rate && typeof vStream.r_frame_rate === 'string') {
           const parts = vStream.r_frame_rate.split('/');
           if (parts.length === 2 && Number(parts[1]) > 0) {
             const parsedFps = Math.round(Number(parts[0]) / Number(parts[1]));
@@ -139,14 +139,15 @@ export function videoDescription(
   opts: TgCallsOptions,
 ) {
   const ffmpeg = opts.ffmpegPath ?? 'ffmpeg';
-  const width = video.width ? (video.width % 2 !== 0 ? video.width - 1 : video.width) : 640;
-  const height = video.height ? (video.height % 2 !== 0 ? video.height - 1 : video.height) : 360;
-  const fps = video.fps ?? 25;
+  const width = video.width ? (video.width % 2 !== 0 ? video.width - 1 : video.width) : 1280;
+  const height = video.height ? (video.height % 2 !== 0 ? video.height - 1 : video.height) : 720;
+  const fps = video.fps ?? 30;
+  const scaleFilter = `scale=${width}:${height}:flags=lanczos,format=yuv420p`;
   let input: string;
   if (source.kind === 'file') {
-    input = `${ffmpeg} -i ${shellQuote(source.path)} -loglevel panic -f rawvideo -r ${fps} -pix_fmt yuv420p -vf scale=${width}:${height} pipe:1`;
+    input = `${ffmpeg} -an -i ${shellQuote(source.path)} -loglevel panic -f rawvideo -r ${fps} -pix_fmt yuv420p -vf ${scaleFilter} pipe:1`;
   } else {
-    input = `${ffmpeg} -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 2 -i ${shellQuote(source.url)} -loglevel panic -f rawvideo -r ${fps} -pix_fmt yuv420p -vf scale=${width}:${height} pipe:1`;
+    input = `${ffmpeg} -an -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 2 -i ${shellQuote(source.url)} -loglevel panic -f rawvideo -r ${fps} -pix_fmt yuv420p -vf ${scaleFilter} pipe:1`;
   }
   return {
     mediaSource: MediaSource.SHELL,
