@@ -144,6 +144,32 @@ export class TgCallsClient {
     });
     await this.ntg.connect(chatId, connParams, false);
 
+    let presentationActive = false;
+    if (options.presentation === true && source.kind !== 'shell') {
+      try {
+        const srcPath = source.kind === 'file' ? source.path : source.url;
+        const targetOpts = typeof options.video === 'object' ? options.video : {};
+        const probed = await probeVideo(srcPath, this.opts, targetOpts);
+        const videoOpts: VideoOptions = {
+          ...probed,
+          ...targetOpts,
+          width: probed.width,
+          height: probed.height,
+          fps: probed.fps,
+        };
+        const presParamsPayload = await this.ntg.initPresentation(chatId);
+        await this.ntg.setStreamSources(chatId, StreamMode.CAPTURE, {
+          microphone: audioDescription(source, this.opts),
+          screen: videoDescription(source as { kind: 'file'; path: string } | { kind: 'url'; url: string }, videoOpts, this.opts),
+        });
+        const presConnParams = await this.joinPresentationCall(chatId, inputCall, presParamsPayload);
+        await this.ntg.connect(chatId, presConnParams, true);
+        presentationActive = true;
+      } catch {
+        /* Presentation fallback */
+      }
+    }
+
     const ssrc = extractSsrc(joinParams);
     this.calls.set(chatId, {
       chatId,
@@ -151,7 +177,7 @@ export class TgCallsClient {
       ssrc,
       source,
       videoActive: options.video !== false && options.video !== undefined && source.kind !== 'shell',
-      presentationActive: false,
+      presentationActive,
       muted: options.muted === true,
       autoLeave: options.autoLeave !== false,
       joinedAt: Date.now(),
@@ -162,7 +188,8 @@ export class TgCallsClient {
 
   /** join() with a YouTube/any yt-dlp-supported page URL. */
   async joinYouTube(chat: ChatRef, url: string, options: JoinOptions = {}): Promise<JoinResult> {
-    const direct = await resolveYouTube(url, this.opts);
+    const isVideo = Boolean(options.video || options.presentation);
+    const direct = await resolveYouTube(url, this.opts, isVideo);
     if (direct === null) {
       throw new Error(`yt-dlp failed to resolve: ${url}`);
     }
@@ -170,8 +197,8 @@ export class TgCallsClient {
   }
 
   /** Resolve a YouTube/any yt-dlp-supported page URL to a direct media URL. */
-  async resolveYouTube(url: string): Promise<string | null> {
-    return resolveYouTube(url, this.opts);
+  async resolveYouTube(url: string, video = false): Promise<string | null> {
+    return resolveYouTube(url, this.opts, video);
   }
 
   /**

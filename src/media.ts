@@ -175,11 +175,15 @@ function shellQuote(s: string): string {
 export async function resolveYouTube(
   url: string,
   opts: TgCallsOptions,
+  video = false,
 ): Promise<string | null> {
   const bin = opts.ytDlpPath ?? 'yt-dlp';
+  const format = video
+    ? 'best[height<=720]/bestvideo[height<=720]+bestaudio/best'
+    : 'bestaudio/best';
   return new Promise((resolve) => {
     const proc = spawn(bin, [
-      '-f', 'bestaudio/best',
+      '-f', format,
       '--no-playlist',
       '-g',
       '--',
