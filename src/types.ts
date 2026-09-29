@@ -20,8 +20,12 @@ export interface MTProtoLike {
 export type AudioSource =
   /** Local audio/video file (any ffmpeg-readable format). */
   | { kind: 'file'; path: string }
-  /** Direct media URL readable by ffmpeg (http/https, m3u8, etc). */
-  | { kind: 'url'; url: string }
+  /**
+   * Direct media URL readable by ffmpeg (http/https, m3u8, etc).
+   * `audioUrl` (optional): separate audio-only URL, used when video and audio
+   * come as two streams (e.g. yt-dlp bestvideo+bestaudio). `url` is then the video.
+   */
+  | { kind: 'url'; url: string; audioUrl?: string }
   /** Full custom shell command that pipes s16le PCM 48k stereo to stdout. */
   | { kind: 'shell'; command: string };
 
@@ -44,7 +48,7 @@ export const VideoQuality = {
   FHD_1080p: { width: 1920, height: 1080, fps: 60 },
   HD_720p: { width: 1280, height: 720, fps: 30 },
   SD_480p: { width: 854, height: 480, fps: 30 },
-  SD_360p: { width: 640, height: 360, fps: 20 },
+  SD_360p: { width: 640, height: 360, fps: 30 },
 } as const;
 
 export interface JoinOptions {
