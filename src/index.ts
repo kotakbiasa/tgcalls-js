@@ -13,7 +13,7 @@
  *   5. ntgcalls.connect(chatId, connParams)   → media starts flowing
  */
 
-import { NTgCalls, ConnectionState, StreamMode } from 'ntgcalls';
+import { NTgCalls, ConnectionState, StreamMode, StreamType } from 'ntgcalls';
 import type {
   ActiveCall,
   AudioSource,
@@ -27,7 +27,7 @@ import type {
   VideoQuality,
 } from './types.js';
 import { loadTl, loadEvents } from './tl.js';
-import { audioDescription, videoDescription, resolveYouTube, probeVideo } from './media.js';
+import { audioDescription, videoDescription, resolveYouTube, resolveYouTubeStreams, probeVideo } from './media.js';
 
 type AnyApi = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 
@@ -59,6 +59,17 @@ function asBigInt0(v: unknown): bigint {
   return toBigInt(v) ?? 0n;
 }
 
+/** Run a user event handler without letting a throw/reject crash the process. */
+function fireAndForget(fn: () => unknown): void {
+  try {
+    Promise.resolve(fn()).catch((err: unknown) => {
+      console.error('[tgcalls-js] event handler error:', err);
+    });
+  } catch (err) {
+    console.error('[tgcalls-js] event handler error:', err);
+  }
+}
+
 export class TgCallsClient {
   /** Direct access to the underlying native instance (advanced use). */
   readonly ntg: NTgCalls;
@@ -71,6 +82,14 @@ export class TgCallsClient {
   private updateCb: ((u: unknown) => void) | null = null;
   private pendingConnectionParams: string | null = null;
   private nativeWired = false;
+  /**
+   * Per-chat video channel (camera OR screen) with the caller's requested
+   * VideoOptions, so setSource() can rebuild it. ntgcalls' setStreamSources
+   * REPLACES all devices: any device left out of the description is removed.
+   */
+  private readonly videoState = new Map<bigint, { device: 'camera' | 'screen'; target: VideoOptions }>();
+  /** Per-chat native stream types that already ended (audio/video aware streamEnd). */
+  private readonly ended = new Map<bigint, Set<StreamType>>();
 
   constructor(opts: TgCallsOptions) {
     this.opts = opts;
@@ -120,6 +139,29 @@ export class TgCallsClient {
     // be sent in JoinGroupCall and its ssrc later reused for LeaveGroupCall.
     const joinParams = await this.ntg.createCall(chatId);
 
+    try {
+      return await this.joinInner(chatId, inputCall, joinParams, source, options);
+    } catch (err) {
+      // Don't leave a half-open native call or a zombie participant behind.
+      this.calls.delete(chatId);
+      this.videoState.delete(chatId);
+      this.ended.delete(chatId);
+      await this.ntg.stop(chatId).catch(() => { /* already stopped */ });
+      await this.client.invoke(new this.Api.phone.LeaveGroupCall({
+        call: inputCall,
+        source: extractSsrc(joinParams),
+      })).catch(() => { /* never joined / already gone */ });
+      throw err;
+    }
+  }
+
+  private async joinInner(
+    chatId: bigint,
+    inputCall: unknown,
+    joinParams: string,
+    source: AudioSource,
+    options: JoinOptions,
+  ): Promise<JoinResult> {
     // Media sources set before the MTProto join so media flows immediately.
     const media: Record<string, unknown> = {
       microphone: audioDescription(source, this.opts),
@@ -129,10 +171,11 @@ export class TgCallsClient {
       const targetOpts = typeof options.video === 'object' ? options.video : {};
       const probed = await probeVideo(srcPath, this.opts, targetOpts);
       media.camera = videoDescription(
-        source as { kind: 'file'; path: string } | { kind: 'url'; url: string },
+        source as Exclude<AudioSource, { kind: 'shell' }>,
         { ...probed, ...targetOpts, width: probed.width, height: probed.height, fps: probed.fps },
         this.opts,
       );
+      this.videoState.set(chatId, { device: 'camera', target: targetOpts });
     }
     await this.ntg.setStreamSources(chatId, StreamMode.CAPTURE, media);
 
@@ -158,13 +201,17 @@ export class TgCallsClient {
           fps: probed.fps,
         };
         const presParamsPayload = await this.ntg.initPresentation(chatId);
+        // Camera and screen can't be mixed in ntgcalls: this call replaces the
+        // camera with the screen channel (audio restarts together with it).
         await this.ntg.setStreamSources(chatId, StreamMode.CAPTURE, {
           microphone: audioDescription(source, this.opts),
-          screen: videoDescription(source as { kind: 'file'; path: string } | { kind: 'url'; url: string }, videoOpts, this.opts),
+          screen: videoDescription(source as Exclude<AudioSource, { kind: 'shell' }>, videoOpts, this.opts),
         });
+        this.ended.delete(chatId);
         const presConnParams = await this.joinPresentationCall(chatId, inputCall, presParamsPayload);
         await this.ntg.connect(chatId, presConnParams, true);
         presentationActive = true;
+        this.videoState.set(chatId, { device: 'screen', target: targetOpts });
       } catch {
         /* Presentation fallback */
       }
@@ -176,7 +223,7 @@ export class TgCallsClient {
       call: inputCall,
       ssrc,
       source,
-      videoActive: options.video !== false && options.video !== undefined && source.kind !== 'shell',
+      videoActive: !presentationActive && options.video !== false && options.video !== undefined && source.kind !== 'shell',
       presentationActive,
       muted: options.muted === true,
       autoLeave: options.autoLeave !== false,
@@ -189,7 +236,21 @@ export class TgCallsClient {
   /** join() with a YouTube/any yt-dlp-supported page URL. */
   async joinYouTube(chat: ChatRef, url: string, options: JoinOptions = {}): Promise<JoinResult> {
     const isVideo = Boolean(options.video || options.presentation);
-    const direct = await resolveYouTube(url, this.opts, isVideo);
+    if (isVideo) {
+      // Separate video + audio streams: avoids the low-res pre-merged format.
+      const vOpts = typeof options.video === 'object' ? options.video : {};
+      const maxHeight = Math.min(vOpts.width ?? 1280, vOpts.height ?? 720);
+      const streams = await resolveYouTubeStreams(url, this.opts, maxHeight);
+      if (streams === null) {
+        throw new Error(`yt-dlp failed to resolve: ${url}`);
+      }
+      return this.join(chat, {
+        kind: 'url',
+        url: streams.url,
+        ...(streams.audioUrl !== undefined ? { audioUrl: streams.audioUrl } : {}),
+      }, options);
+    }
+    const direct = await resolveYouTube(url, this.opts, false);
     if (direct === null) {
       throw new Error(`yt-dlp failed to resolve: ${url}`);
     }
@@ -276,6 +337,8 @@ export class TgCallsClient {
     const id = BigInt(chatId);
     const active = this.calls.get(id);
     this.calls.delete(id);
+    this.videoState.delete(id);
+    this.ended.delete(id);
     try {
       await this.ntg.stop(id);
     } catch { /* already stopped */ }
@@ -327,9 +390,23 @@ export class TgCallsClient {
     if (!this.calls.has(id)) {
       throw new Error(`No active call in chat ${id}`);
     }
-    await this.ntg.setStreamSources(id, StreamMode.CAPTURE, {
+    const media: Record<string, unknown> = {
       microphone: audioDescription(source, this.opts),
-    });
+    };
+    // ntgcalls removes any device missing from the description, so rebuild the
+    // video channel (camera/screen) from the new source or it would vanish.
+    const vs = this.videoState.get(id);
+    if (vs !== undefined) {
+      if (source.kind === 'shell') {
+        this.videoState.delete(id); // shell = audio-only, video channel ends
+      } else {
+        const srcPath = source.kind === 'file' ? source.path : source.url;
+        const probed = await probeVideo(srcPath, this.opts, vs.target);
+        media[vs.device] = videoDescription(source, probed, this.opts);
+      }
+    }
+    this.ended.delete(id);
+    await this.ntg.setStreamSources(id, StreamMode.CAPTURE, media);
     const active = this.calls.get(id);
     if (active) {active.source = source;}
   }
@@ -339,7 +416,7 @@ export class TgCallsClient {
    * `source` must be file/url (ffmpeg-readable). RTC connection required —
    * not available in STREAM/RTMP connection modes.
    */
-  async startPresentation(chatId: ChatRef, source: { kind: 'file'; path: string } | { kind: 'url'; url: string }, video: VideoOptions = {}): Promise<void> {
+  async startPresentation(chatId: ChatRef, source: Exclude<AudioSource, { kind: 'shell' }>, video: VideoOptions = {}): Promise<void> {
     const id = BigInt(chatId);
     if (!this.calls.has(id)) {
       throw new Error(`No active call in chat ${id}`);
@@ -357,14 +434,24 @@ export class TgCallsClient {
       height: probed.height,
       fps: probed.fps,
     };
+    // Idle calls (joinIdle) carry an empty shell source: don't start it as audio.
+    const hasAudio = active?.source !== undefined
+      && !(active.source.kind === 'shell' && active.source.command === '');
+    // Camera and screen can't be mixed in ntgcalls, so the screen replaces the
+    // camera. Audio is re-sent so it restarts in sync with the screen video.
     await this.ntg.setStreamSources(id, StreamMode.CAPTURE, {
-      ...(active?.source ? { microphone: audioDescription(active.source, this.opts) } : {}),
+      ...(hasAudio && active ? { microphone: audioDescription(active.source, this.opts) } : {}),
       screen: videoDescription(source, videoOpts, this.opts),
     });
+    this.ended.delete(id);
     // 3) MTProto presentation join; connect on the presentation channel
     const connParams = await this.joinPresentationCall(id, this.calls.get(id)?.call, params);
     await this.ntg.connect(id, connParams, true);
-    if (active) {active.presentationActive = true;}
+    this.videoState.set(id, { device: 'screen', target: video });
+    if (active) {
+      active.presentationActive = true;
+      active.videoActive = false;
+    }
   }
 
   /** Stop the presentation channel (screen share off, main call stays). */
@@ -381,6 +468,8 @@ export class TgCallsClient {
         call: this.calls.get(id)?.call,
       }));
     } catch { /* best-effort */ }
+    this.videoState.delete(id);
+    this.ended.delete(id);
     const active = this.calls.get(id);
     if (active) {active.presentationActive = false;}
   }
@@ -391,24 +480,38 @@ export class TgCallsClient {
     if (this.nativeWired) {return;}
     this.nativeWired = true;
 
-    this.ntg.onStreamEnd((chatId: bigint) => {
+    this.ntg.onStreamEnd((chatId: bigint, type: StreamType) => {
+      // ntgcalls fires once per stream type. Audio-only: react to AUDIO.
+      // With a video channel: wait until BOTH audio and video have ended, so
+      // a single playback doesn't emit streamEnd twice or auto-leave early.
+      const seen = this.ended.get(chatId) ?? new Set<StreamType>();
+      seen.add(type);
+      this.ended.set(chatId, seen);
+      const done = this.videoState.has(chatId)
+        ? seen.has(StreamType.AUDIO) && seen.has(StreamType.VIDEO)
+        : type === StreamType.AUDIO;
+      if (!done) {return;}
+      this.ended.delete(chatId);
+
       const active = this.calls.get(chatId);
       const claimed = this.eventHandlers.streamEnd !== undefined;
       if (active?.autoLeave && !claimed) {
         this.leave(chatId).catch(() => { /* best-effort */ });
       }
-      void this.eventHandlers.streamEnd?.({
+      fireAndForget(() => this.eventHandlers.streamEnd?.({
         chatId,
         source: active?.source ?? null,
         willAutoLeave: active?.autoLeave === true && !claimed,
-      });
+      }));
     });
 
     this.ntg.onConnectionChange((chatId: bigint, info: { state: ConnectionState }) => {
       if (info.state === ConnectionState.CLOSED || info.state === ConnectionState.FAILED) {
         this.calls.delete(chatId);
+        this.videoState.delete(chatId);
+        this.ended.delete(chatId);
       }
-      void this.eventHandlers.connectionChange?.(chatId, info.state);
+      fireAndForget(() => this.eventHandlers.connectionChange?.(chatId, info.state));
     });
   }
 
@@ -556,7 +659,7 @@ export class TgCallsClient {
     if (this.updateCb !== null || this.client.addEventHandler === undefined) {return;}
     this.updateCb = (update: unknown) => {
       const u = update as { className?: string; params?: { data?: string } };
-      void this.eventHandlers.update?.(u);
+      fireAndForget(() => this.eventHandlers.update?.(u));
       if (u.className === 'UpdateGroupCallConnection' && typeof u.params?.data === 'string') {
         this.pendingConnectionParams = u.params.data;
       }
@@ -605,6 +708,8 @@ export class TgCallsClient {
       this.updateCb = null;
     }
     this.calls.clear();
+    this.videoState.clear();
+    this.ended.clear();
   }
 }
 
@@ -669,7 +774,7 @@ function markedIdFromEntity(entity: unknown): bigint | undefined {
 }
 
 export { loadTl, resetTlCache, loadEvents } from './tl.js';
-export { resolveYouTube, pcmCommand, audioDescription, videoDescription, probeVideo } from './media.js';
+export { resolveYouTube, resolveYouTubeStreams, pcmCommand, audioDescription, videoDescription, probeVideo } from './media.js';
 export { VideoQuality } from './types.js';
 export type {
   ActiveCall,

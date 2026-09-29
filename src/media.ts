@@ -14,7 +14,7 @@ export function pcmCommand(source: AudioSource, opts: TgCallsOptions): string {
     case 'file':
       return `${ffmpeg} -vn -i ${shellQuote(source.path)} -loglevel panic -f s16le -ac 2 -ar 48000 pipe:1`;
     case 'url':
-      return `${ffmpeg} -vn -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 2 -i ${shellQuote(source.url)} -loglevel panic -f s16le -ac 2 -ar 48000 pipe:1`;
+      return `${ffmpeg} -vn -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 2 -i ${shellQuote(source.audioUrl ?? source.url)} -loglevel panic -f s16le -ac 2 -ar 48000 pipe:1`;
     case 'shell':
       return source.command;
   }
@@ -142,7 +142,7 @@ export function videoDescription(
   const width = video.width ? (video.width % 2 !== 0 ? video.width - 1 : video.width) : 1280;
   const height = video.height ? (video.height % 2 !== 0 ? video.height - 1 : video.height) : 720;
   const fps = video.fps ?? 30;
-  const scaleFilter = `scale=${width}:${height}:flags=lanczos,format=yuv420p`;
+  const scaleFilter = `scale=${width}:${height}:flags=bicubic,format=yuv420p`;
   let input: string;
   if (source.kind === 'file') {
     input = `${ffmpeg} -an -i ${shellQuote(source.path)} -loglevel panic -f rawvideo -r ${fps} -pix_fmt yuv420p -vf ${scaleFilter} pipe:1`;
@@ -211,6 +211,62 @@ export async function resolveYouTube(
         resolve(lines[lines.length - 1]);
       } else {
         resolve(null);
+      }
+    });
+  });
+}
+
+/**
+ * Resolve a YouTube (or any yt-dlp-supported) link for VIDEO playback.
+ *
+ * Mirrors pytgcalls' YtDlp.extract(): separate video + audio streams
+ * (`bestvideo[vcodec~="(vp09|avc1)"]+m4a/best`) sorted toward `maxHeight`
+ * (`-S res:N`). Restricting to vp09/avc1 avoids AV1, which is very heavy to
+ * decode in real time on a small VPS. Unlike resolveYouTube(), the picture is
+ * not stuck at the low-res pre-merged `best` format. `-g` prints one URL per
+ * stream: line 1 = video, line 2 = audio. When only one URL comes back (a
+ * single combined format) `audioUrl` is omitted and `url` carries both.
+ */
+export async function resolveYouTubeStreams(
+  url: string,
+  opts: TgCallsOptions,
+  maxHeight = 720,
+): Promise<{ url: string; audioUrl?: string } | null> {
+  const bin = opts.ytDlpPath ?? 'yt-dlp';
+  const format = 'bestvideo[vcodec~="(vp09|avc1)"]+m4a/best';
+  return new Promise((resolve) => {
+    const proc = spawn(bin, [
+      '-f', format,
+      '-S', `res:${maxHeight}`,
+      '--no-playlist',
+      '--no-warnings',
+      '-g',
+      '--',
+      url,
+    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+
+    let out = '';
+    const timer = setTimeout(() => {
+      proc.kill('SIGKILL');
+      resolve(null);
+    }, 20_000);
+
+    proc.stdout.on('data', (chunk: Buffer) => {
+      out += chunk.toString();
+    });
+    proc.on('error', () => {
+      clearTimeout(timer);
+      resolve(null);
+    });
+    proc.on('close', (code) => {
+      clearTimeout(timer);
+      const lines = out.split('\n').map((l) => l.trim()).filter(Boolean);
+      if (code !== 0 || lines.length === 0) {
+        resolve(null);
+      } else if (lines.length >= 2) {
+        resolve({ url: lines[0], audioUrl: lines[1] });
+      } else {
+        resolve({ url: lines[0] });
       }
     });
   });

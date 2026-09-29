@@ -1,4 +1,5 @@
 import { strict as assert } from 'assert';
+import { spawnSync } from 'child_process';
 import { TgCallsClient } from '../src/index.js';
 import type { MTProtoLike } from '../src/index.js';
 
@@ -87,6 +88,15 @@ const client: MTProtoLike = {
 };
 
 async function main(): Promise<void> {
+  // Build the video fixture FIRST: forking (spawnSync) after ntgcalls' native
+  // threads exist can deadlock, so no child process is spawned once tests start.
+  const ff = spawnSync('ffmpeg', [
+    '-loglevel', 'error', '-y',
+    '-f', 'lavfi', '-i', 'testsrc=size=320x180:rate=15',
+    '-f', 'lavfi', '-i', 'sine=frequency=440',
+    '-t', '10', '-pix_fmt', 'yuv420p', '/tmp/tgcalls-test.mp4',
+  ], { stdio: 'ignore', timeout: 20_000 }); // no pipes + timeout: never hang the suite
+
   const tg = new TgCallsClient({ client, Api });
 
   // --- join (file source)
@@ -181,6 +191,42 @@ async function main(): Promise<void> {
   // path in wireNative calls exactly this leave()).
   await tg3.leave(-1001234567890);
   assert.equal(leaveCalledAfterEnd, true, 'leave() invokes LeaveGroupCall with ssrc');
+
+  // --- setSource must keep the video channel (ntgcalls drops omitted devices)
+  if (ff.status === 0) {
+    const tg4 = new TgCallsClient({ client, Api });
+    const vid = { kind: 'file' as const, path: '/tmp/tgcalls-test.mp4' };
+    await tg4.join(-1001234567890, vid, { video: { width: 320, height: 180, fps: 15 } });
+    assert.equal((await tg4.ntg.getState(-1001234567890n)).videoStopped, false, 'video active after join');
+    await tg4.setSource(-1001234567890, vid);
+    assert.equal((await tg4.ntg.getState(-1001234567890n)).videoStopped, false, 'setSource must keep video');
+    await tg4.leave(-1001234567890);
+  } else {
+    console.warn('skipped video test: ffmpeg unavailable');
+  }
+
+  // --- a failed join cleans up (no native call / zombie participant left behind)
+  let leaveOnFail = false;
+  (client as { invoke: (r: unknown) => Promise<unknown> }).invoke = async (request) => {
+    const req = request as { className: string };
+    if (req.className === 'GetFullChannel') {
+      return { fullChat: { call: { id: '987654321', accessHash: '1122334455' } } };
+    }
+    if (req.className === 'JoinGroupCall') {
+      return { updates: [] }; // never delivers UpdateGroupCallConnection
+    }
+    if (req.className === 'LeaveGroupCall') {
+      leaveOnFail = true;
+    }
+    return {};
+  };
+  const tg5 = new TgCallsClient({ client, Api });
+  await assert.rejects(
+    () => tg5.join(-1001234567890, { kind: 'file', path: '/tmp/test.mp3' }),
+    /no UpdateGroupCallConnection/,
+  );
+  assert.equal(tg5.isActive(-1001234567890), false);
+  assert.equal(leaveOnFail, true, 'failed join sends LeaveGroupCall');
 
   console.log('ALL TESTS PASSED');
   process.exit(0); // native WebRTC threads keep the loop alive otherwise
