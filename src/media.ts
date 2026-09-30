@@ -130,8 +130,8 @@ export async function probeVideo(
 }
 
 /**
- * Build the ntgcalls camera/screen description (rawvideo yuv420p via ffmpeg),
- * mirroring pytgcalls' exact ffmpeg pipeline without -re.
+ * Build the ntgcalls camera/screen description using PyTgCalls' raw yuv420p
+ * FFmpeg pipeline.
  */
 export function videoDescription(
   source: Exclude<AudioSource, { kind: 'shell' }>,
