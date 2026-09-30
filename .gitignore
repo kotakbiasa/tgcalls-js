@@ -3,4 +3,3 @@ dist/
 *.tsbuildinfo
 *.log
 .env
-.qr-login.png
