@@ -25,6 +25,7 @@
     "build": "tsc",
     "test": "tsx test/run.ts",
     "smoke": "node smoke.mjs",
+    "auth:qr": "tsx examples/login-teleproto-qr.ts",
     "prepare": "npm run build",
     "prepublishOnly": "npm run build && npm run smoke"
   },
@@ -63,6 +64,10 @@
   },
   "devDependencies": {
     "@types/node": "^26.5.0",
+    "dotenv": "^18.0.4",
+    "qrcode": "^1.5.4",
+    "qrcode-terminal": "^0.12.0",
+    "teleproto": "^1.229.0",
     "tsx": "^4.23.13",
     "typescript": "^5.9.3"
   }

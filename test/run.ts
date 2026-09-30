@@ -141,6 +141,34 @@ async function main(): Promise<void> {
   assert.ok(leave, 'LeaveGroupCall invoked');
   assert.equal(leave!.args.source, joinSsrc, 'leave uses join ssrc');
 
+  // --- concurrent joins to the same chat: only the first request may proceed
+  let releaseFullChannel!: () => void;
+  let signalFullChannelStarted!: () => void;
+  const fullChannelStarted = new Promise<void>((resolve) => { signalFullChannelStarted = resolve; });
+  const fullChannelGate = new Promise<void>((resolve) => { releaseFullChannel = resolve; });
+  (client as { invoke: (r: unknown) => Promise<unknown> }).invoke = async (request) => {
+    const req = request as { className: string };
+    if (req.className === 'GetFullChannel') {
+      signalFullChannelStarted();
+      await fullChannelGate;
+      return { fullChat: { call: { id: '987654321', accessHash: '1122334455' } } };
+    }
+    if (req.className === 'JoinGroupCall') {
+      return { updates: [{ className: 'UpdateGroupCallConnection', params: { data: CONNECTION_PARAMS } }] };
+    }
+    return {};
+  };
+  const tgRace = new TgCallsClient({ client, Api });
+  const firstJoin = tgRace.join(-1001234567890, { kind: 'file', path: '/tmp/test.mp3' });
+  await fullChannelStarted;
+  await assert.rejects(
+    () => tgRace.join(-1001234567890, { kind: 'file', path: '/tmp/test.mp3' }),
+    /Already in a call/,
+  );
+  releaseFullChannel();
+  await firstJoin;
+  await tgRace.leave(-1001234567890);
+
   // --- connection params via update handler path
   calls.length = 0;
   const tg2 = new TgCallsClient({ client, Api });
@@ -227,6 +255,29 @@ async function main(): Promise<void> {
   );
   assert.equal(tg5.isActive(-1001234567890), false);
   assert.equal(leaveOnFail, true, 'failed join sends LeaveGroupCall');
+
+  // --- joinIdle also cleans up a participant when connection params time out
+  let leaveOnIdleFail = false;
+  (client as { invoke: (r: unknown) => Promise<unknown> }).invoke = async (request) => {
+    const req = request as { className: string };
+    if (req.className === 'GetFullChannel') {
+      return { fullChat: { call: { id: '987654321', accessHash: '1122334455' } } };
+    }
+    if (req.className === 'JoinGroupCall') {
+      return { updates: [] };
+    }
+    if (req.className === 'LeaveGroupCall') {
+      leaveOnIdleFail = true;
+    }
+    return {};
+  };
+  const tgIdleFail = new TgCallsClient({ client, Api });
+  await assert.rejects(
+    () => tgIdleFail.joinIdle(-1001234567890),
+    /no UpdateGroupCallConnection/,
+  );
+  assert.equal(tgIdleFail.isActive(-1001234567890), false);
+  assert.equal(leaveOnIdleFail, true, 'failed joinIdle sends LeaveGroupCall');
 
   console.log('ALL TESTS PASSED');
   process.exit(0); // native WebRTC threads keep the loop alive otherwise

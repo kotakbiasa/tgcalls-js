@@ -176,7 +176,11 @@ export class TgCallsClient {
     const media: Record<string, unknown> = {
       microphone: audioDescription(source, this.opts),
     };
-    if (options.video !== false && options.video !== undefined && source.kind !== 'shell') {
+    const cameraVideo = options.presentation !== true
+      && options.video !== false
+      && options.video !== undefined
+      && source.kind !== 'shell';
+    if (cameraVideo) {
       const srcPath = source.kind === 'file' ? source.path : source.url;
       const targetOpts = typeof options.video === 'object' ? options.video : {};
       const probed = await probeVideo(srcPath, this.opts, targetOpts);
@@ -193,7 +197,7 @@ export class TgCallsClient {
       ...options,
       // videoStopped=false only when we actually share camera video.
       muted: options.muted === true,
-      videoStopped: !(options.video !== false && options.video !== undefined && source.kind !== 'shell'),
+      videoStopped: !cameraVideo,
     });
     await this.ntg.connect(chatId, connParams, false);
 
