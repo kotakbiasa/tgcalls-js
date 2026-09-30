@@ -1,0 +1,65 @@
+## Section 13 — Finance Emoji
+Pack: https://t.me/addemoji/FinanceEmoji
+
+| key suggestion | emoji_id | description | fallback |
+|---|---|---|---|
+| finance_2311 | 5267500801240092311 | Finance Emoji ⭐ | ⭐ |
+| finance_7830 | 5197434882321567830 | Finance Emoji 💵 | 💵 |
+| finance_5200 | 5197369495739455200 | Finance Emoji 💶 | 💶 |
+| finance_5101 | 5377505475015235101 | Finance Emoji 🪙 | 🪙 |
+| finance_9336 | 5377775044342599336 | Finance Emoji 💷 | 💷 |
+| finance_3533 | 5197161121106123533 | Finance Emoji 💴 | 💴 |
+| finance_4795 | 5377746319601324795 | Finance Emoji 🪙 | 🪙 |
+| finance_5687 | 5379773896352355687 | Finance Emoji 🪙 | 🪙 |
+| finance_0546 | 5202064723922670546 | Finance Emoji 🪙 | 🪙 |
+| finance_3146 | 5202113974312653146 | Finance Emoji 🪙 | 🪙 |
+| finance_7342 | 5377620962390857342 | Finance Emoji 🪙 | 🪙 |
+| finance_4073 | 5201692367437974073 | Finance Emoji 💵 | 💵 |
+| finance_8774 | 5199552030615558774 | Finance Emoji 🪙 | 🪙 |
+| finance_2976 | 5197371802136892976 | Finance Emoji ⛏ | ⛏ |
+| finance_7411 | 5445353829304387411 | Finance Emoji 💳 | 💳 |
+| finance_5358 | 5443127283898405358 | Finance Emoji 📥 | 📥 |
+| finance_7729 | 5445355530111437729 | Finance Emoji 📤 | 📤 |
+| finance_7942 | 5197269100878907942 | Finance Emoji ✍️ | ✍️ |
+| finance_1678 | 5330320040883411678 | Finance Emoji 🗺 | 🗺 |
+| finance_8138 | 5201691993775818138 | Finance Emoji 🛫 | 🛫 |
+| finance_4588 | 5303138782004924588 | Finance Emoji 💬 | 💬 |
+| finance_6636 | 5310278924616356636 | Finance Emoji 🎯 | 🎯 |
+| finance_5967 | 5294167145079395967 | Finance Emoji 🛍 | 🛍 |
+| finance_0455 | 5444856076954520455 | Finance Emoji 🧾 | 🧾 |
+| finance_7759 | 5399909394525737759 | Finance Emoji 🪣 | 🪣 |
+| finance_7019 | 5224450179368767019 | Finance Emoji 🌎 | 🌎 |
+| finance_1876 | 5411089297476441876 | Finance Emoji 🐻 | 🐻 |
+| finance_9009 | 5411233191765759009 | Finance Emoji 🐂 | 🐂 |
+| finance_8039 | 5332724926216428039 | Finance Emoji 📇 | 📇 |
+| finance_5778 | 5303214794336125778 | Finance Emoji 🧮 | 🧮 |
+| finance_2936 | 5382194935057372936 | Finance Emoji ⏱ | ⏱ |
+| finance_5957 | 5429518319243775957 | Finance Emoji 📉 | 📉 |
+| finance_1917 | 5429651785352501917 | Finance Emoji ↗️ | ↗️ |
+| finance_5399 | 5312361253610475399 | Finance Emoji 🛒 | 🛒 |
+| finance_1085 | 5400250414929041085 | Finance Emoji ⚖️ | ⚖️ |
+| finance_0689 | 5400362079783770689 | Finance Emoji 🐳 | 🐳 |
+| finance_5275 | 5193177581888755275 | Finance Emoji 💻 | 💻 |
+| finance_7692 | 5190806721286657692 | Finance Emoji 📊 | 📊 |
+| finance_7855 | 5305699699204837855 | Finance Emoji 🍀 | 🍀 |
+| finance_3121 | 5312123810638483121 | Finance Emoji 🐷 | 🐷 |
+| finance_8319 | 5271837459783638319 | Finance Emoji ↔️ | ↔️ |
+| finance_9981 | 5332455502917949981 | Finance Emoji 🏦 | 🏦 |
+| finance_2777 | 5379999674193172777 | Finance Emoji 🔭 | 🔭 |
+| finance_6661 | 5377535110289576661 | Finance Emoji 🧲 | 🧲 |
+| finance_2456 | 5278702045883292456 | Finance Emoji 🛍 | 🛍 |
+| finance_9435 | 5312441427764989435 | Finance Emoji 💱 | 💱 |
+| finance_3553 | 5445221832074483553 | Finance Emoji 💼 | 💼 |
+| finance_2507 | 5274055917766202507 | Finance Emoji 🗓 | 🗓 |
+| finance_3800 | 5262517101578443800 | Finance Emoji 🖼 | 🖼 |
+| finance_1533 | 5197503331215361533 | Finance Emoji 📈 | 📈 |
+| finance_9232 | 5195033767969839232 | Finance Emoji 🚀 | 🚀 |
+| finance_1607 | 5197288647275071607 | Finance Emoji 🛡 | 🛡 |
+| finance_1191 | 5190741648237161191 | Finance Emoji 🧮 | 🧮 |
+| finance_7565 | 5291914649481007565 | Finance Emoji 💵 | 💵 |
+| finance_9446 | 5264713049637409446 | Finance Emoji 🪙 | 🪙 |
+| finance_3973 | 5267102644886853973 | Finance Emoji ❤️ | ❤️ |
+| finance_7951 | 5240228673738527951 | Finance Emoji 🏷 | 🏷 |
+| finance_7669 | 5287231198098117669 | Finance Emoji 💰 | 💰 |
+| finance_3985 | 5262844652964303985 | Finance Emoji 💡 | 💡 |
+| finance_0626 | 5278467510604160626 | Finance Emoji 💰 | 💰 |

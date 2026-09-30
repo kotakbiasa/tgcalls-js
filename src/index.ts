@@ -78,9 +78,13 @@ export class TgCallsClient {
   private readonly Api: AnyApi;
   private readonly opts: TgCallsOptions;
   private readonly calls = new Map<bigint, ActiveCall>();
+  /** Chats with a join operation in progress; prevents duplicate parallel joins. */
+  private readonly joining = new Set<bigint>();
   private readonly eventHandlers: Partial<TgCallsEvents> = {};
   private updateCb: ((u: unknown) => void) | null = null;
   private pendingConnectionParams: string | null = null;
+  /** Connection updates have no reliable chat correlation, so consume them serially. */
+  private connectionParamsQueue: Promise<void> = Promise.resolve();
   private nativeWired = false;
   /**
    * Per-chat video channel (camera OR screen) with the caller's requested
@@ -129,17 +133,19 @@ export class TgCallsClient {
    */
   async join(chat: ChatRef, source: AudioSource, options: JoinOptions = {}): Promise<JoinResult> {
     const chatId = await this.resolveChatId(chat);
-    if (this.calls.has(chatId)) {
+    if (this.calls.has(chatId) || this.joining.has(chatId)) {
       throw new Error(`Already in a call in chat ${chatId} — leave() first`);
     }
+    this.joining.add(chatId);
 
-    const inputCall = await this.getGroupCall(chatId, options.allowCreate === true);
-
-    // Native join params — created exactly once; the SAME params string must
-    // be sent in JoinGroupCall and its ssrc later reused for LeaveGroupCall.
-    const joinParams = await this.ntg.createCall(chatId);
-
+    let inputCall: unknown;
+    let joinParams: string | undefined;
     try {
+      inputCall = await this.getGroupCall(chatId, options.allowCreate === true);
+
+      // Native join params — created exactly once; the SAME params string must
+      // be sent in JoinGroupCall and its ssrc later reused for LeaveGroupCall.
+      joinParams = await this.ntg.createCall(chatId);
       return await this.joinInner(chatId, inputCall, joinParams, source, options);
     } catch (err) {
       // Don't leave a half-open native call or a zombie participant behind.
@@ -147,11 +153,15 @@ export class TgCallsClient {
       this.videoState.delete(chatId);
       this.ended.delete(chatId);
       await this.ntg.stop(chatId).catch(() => { /* already stopped */ });
-      await this.client.invoke(new this.Api.phone.LeaveGroupCall({
-        call: inputCall,
-        source: extractSsrc(joinParams),
-      })).catch(() => { /* never joined / already gone */ });
+      if (inputCall !== undefined && joinParams !== undefined) {
+        await this.client.invoke(new this.Api.phone.LeaveGroupCall({
+          call: inputCall,
+          source: extractSsrc(joinParams),
+        })).catch(() => { /* never joined / already gone */ });
+      }
       throw err;
+    } finally {
+      this.joining.delete(chatId);
     }
   }
 
@@ -208,7 +218,7 @@ export class TgCallsClient {
           screen: videoDescription(source as Exclude<AudioSource, { kind: 'shell' }>, videoOpts, this.opts),
         });
         this.ended.delete(chatId);
-        const presConnParams = await this.joinPresentationCall(chatId, inputCall, presParamsPayload);
+        const presConnParams = await this.joinPresentationCall(inputCall, presParamsPayload);
         await this.ntg.connect(chatId, presConnParams, true);
         presentationActive = true;
         this.videoState.set(chatId, { device: 'screen', target: targetOpts });
@@ -272,59 +282,67 @@ export class TgCallsClient {
    */
   async joinIdle(chat: ChatRef, options: JoinOptions = {}): Promise<JoinResult> {
     const chatId = await this.resolveChatId(chat);
-    if (this.calls.has(chatId)) {
+    if (this.calls.has(chatId) || this.joining.has(chatId)) {
       throw new Error(`Already in a call in chat ${chatId} — leave() first`);
     }
+    this.joining.add(chatId);
 
-    let inputCall = await this.getGroupCall(chatId, false).catch(() => null);
-    if (inputCall === null) {
-      if (options.allowCreate !== true) {
-        throw new Error('No active voice chat in this chat. Start one first, or pass allowCreate: true.');
-      }
-      await this.getGroupCall(chatId, true); // creates (rtmpStream) and returns it
-      inputCall = await this.getGroupCall(chatId, false);
-    }
-
-    const joinParams = await this.ntg.createCall(chatId);
-    this.installUpdateHandler();
-    this.pendingConnectionParams = null;
-    const result = await this.client.invoke(new this.Api.phone.JoinGroupCall({
-      call: inputCall,
-      params: new this.Api.DataJSON({ data: joinParams }),
-      muted: true,
-      videoStopped: true,
-      joinAs: new this.Api.InputPeerSelf(),
-      ...(options.inviteHash !== undefined ? { inviteHash: options.inviteHash } : {}),
-    })) as { updates?: Array<Record<string, unknown>> } | undefined;
-    let connParams = findConnectionParams(result?.updates ?? []);
-    if (connParams === null) {
-      for (let i = 0; i < 15 && connParams === null; i++) {
-        await sleep(200);
-        if (this.pendingConnectionParams !== null) {
-          connParams = this.pendingConnectionParams;
-          this.pendingConnectionParams = null;
+    let inputCall: unknown;
+    let joinParams: string | undefined;
+    let joinAttempted = false;
+    try {
+      inputCall = await this.getGroupCall(chatId, false).catch(() => null);
+      if (inputCall === null) {
+        if (options.allowCreate !== true) {
+          throw new Error('No active voice chat in this chat. Start one first, or pass allowCreate: true.');
         }
+        await this.getGroupCall(chatId, true); // creates (rtmpStream) and returns it
+        inputCall = await this.getGroupCall(chatId, false);
       }
-    }
-    if (connParams === null) {
-      throw new Error('JoinGroupCall succeeded but no UpdateGroupCallConnection was received');
-    }
-    await this.ntg.connect(chatId, connParams, false);
 
-    const ssrc = extractSsrc(joinParams);
-    this.calls.set(chatId, {
-      chatId,
-      call: inputCall,
-      ssrc,
-      source: { kind: 'shell', command: '' }, // idle: no media source
-      videoActive: false,
-      presentationActive: false,
-      muted: true,
-      autoLeave: false,
-      joinedAt: Date.now(),
-    });
-    this.wireNative();
-    return { chatId, call: inputCall, ssrc };
+      joinParams = await this.ntg.createCall(chatId);
+      const params = await this.withConnectionParams(async () => {
+        joinAttempted = true;
+        return this.client.invoke(new this.Api.phone.JoinGroupCall({
+          call: inputCall,
+          params: new this.Api.DataJSON({ data: joinParams }),
+          muted: true,
+          videoStopped: true,
+          joinAs: new this.Api.InputPeerSelf(),
+          ...(options.inviteHash !== undefined ? { inviteHash: options.inviteHash } : {}),
+        }));
+      }, 'JoinGroupCall succeeded but no UpdateGroupCallConnection was received');
+      await this.ntg.connect(chatId, params, false);
+
+      const ssrc = extractSsrc(joinParams);
+      this.calls.set(chatId, {
+        chatId,
+        call: inputCall,
+        ssrc,
+        source: { kind: 'shell', command: '' }, // idle: no media source
+        videoActive: false,
+        presentationActive: false,
+        muted: true,
+        autoLeave: false,
+        joinedAt: Date.now(),
+      });
+      this.wireNative();
+      return { chatId, call: inputCall, ssrc };
+    } catch (err) {
+      this.calls.delete(chatId);
+      this.videoState.delete(chatId);
+      this.ended.delete(chatId);
+      await this.ntg.stop(chatId).catch(() => { /* already stopped */ });
+      if (joinAttempted && inputCall !== undefined && joinParams !== undefined) {
+        await this.client.invoke(new this.Api.phone.LeaveGroupCall({
+          call: inputCall,
+          source: extractSsrc(joinParams),
+        })).catch(() => { /* join failed or participant already gone */ });
+      }
+      throw err;
+    } finally {
+      this.joining.delete(chatId);
+    }
   }
 
   // ---------------------------------------------------------------- control
@@ -445,7 +463,7 @@ export class TgCallsClient {
     });
     this.ended.delete(id);
     // 3) MTProto presentation join; connect on the presentation channel
-    const connParams = await this.joinPresentationCall(id, this.calls.get(id)?.call, params);
+    const connParams = await this.joinPresentationCall(this.calls.get(id)?.call, params);
     await this.ntg.connect(id, connParams, true);
     this.videoState.set(id, { device: 'screen', target: video });
     if (active) {
@@ -626,33 +644,14 @@ export class TgCallsClient {
     joinParams: string,
     options: JoinOptions,
   ): Promise<string> {
-    // Ready the update handler first: some servers deliver
-    // UpdateGroupCallConnection via updates instead of the join result.
-    this.installUpdateHandler();
-    this.pendingConnectionParams = null;
-
-    const result = await this.client.invoke(new this.Api.phone.JoinGroupCall({
+    return this.withConnectionParams(() => this.client.invoke(new this.Api.phone.JoinGroupCall({
       call: inputCall,
       params: new this.Api.DataJSON({ data: joinParams }),
       muted: options.muted === true,
       videoStopped: options.videoStopped ?? true,
       joinAs: new this.Api.InputPeerSelf(),
       ...(options.inviteHash !== undefined ? { inviteHash: options.inviteHash } : {}),
-    })) as { updates?: Array<Record<string, unknown>> } | undefined;
-
-    const inline = findConnectionParams(result?.updates ?? []);
-    if (inline !== null) {
-      return inline;
-    }
-    for (let i = 0; i < 15; i++) {
-      await sleep(200);
-      if (this.pendingConnectionParams !== null) {
-        const p = this.pendingConnectionParams;
-        this.pendingConnectionParams = null;
-        return p;
-      }
-    }
-    throw new Error('JoinGroupCall succeeded but no UpdateGroupCallConnection was received');
+    })), 'JoinGroupCall succeeded but no UpdateGroupCallConnection was received');
   }
 
   private installUpdateHandler(): void {
@@ -679,26 +678,42 @@ export class TgCallsClient {
     this.client.addEventHandler(this.updateCb, builder);
   }
 
-  private async joinPresentationCall(chatId: bigint, inputCall: unknown, presentationParams: string): Promise<string> {
-    this.installUpdateHandler();
-    this.pendingConnectionParams = null;
-    const result = await this.client.invoke(new this.Api.phone.JoinGroupCallPresentation({
+  private async joinPresentationCall(inputCall: unknown, presentationParams: string): Promise<string> {
+    return this.withConnectionParams(() => this.client.invoke(new this.Api.phone.JoinGroupCallPresentation({
       call: inputCall,
       params: new this.Api.DataJSON({ data: presentationParams }),
-    })) as { updates?: Array<Record<string, unknown>> } | undefined;
-    const inline = findConnectionParams(result?.updates ?? []);
-    if (inline !== null) {
-      return inline;
-    }
-    for (let i = 0; i < 15; i++) {
-      await sleep(200);
-      if (this.pendingConnectionParams !== null) {
-        const p = this.pendingConnectionParams;
-        this.pendingConnectionParams = null;
-        return p;
+    })), 'JoinGroupCallPresentation succeeded but no UpdateGroupCallConnection was received');
+  }
+
+  /**
+   * MTProto connection updates are not reliably correlated to the chat that
+   * requested them. Serialize the request and its update wait so parallel
+   * joins or presentation changes cannot consume each other's parameters.
+   */
+  private async withConnectionParams(request: () => Promise<unknown>, errorMessage: string): Promise<string> {
+    let release!: () => void;
+    const previous = this.connectionParamsQueue;
+    this.connectionParamsQueue = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
+    try {
+      this.installUpdateHandler();
+      this.pendingConnectionParams = null;
+      const result = await request() as { updates?: Array<Record<string, unknown>> } | undefined;
+      const inline = findConnectionParams(result?.updates ?? []);
+      if (inline !== null) {return inline;}
+      for (let i = 0; i < 15; i++) {
+        await sleep(200);
+        if (this.pendingConnectionParams !== null) {
+          const params = this.pendingConnectionParams;
+          this.pendingConnectionParams = null;
+          return params;
+        }
       }
+      throw new Error(errorMessage);
+    } finally {
+      this.pendingConnectionParams = null;
+      release();
     }
-    throw new Error('JoinGroupCallPresentation succeeded but no UpdateGroupCallConnection was received');
   }
 
   /** Cleanup for consumers disposing the MTProto client. */
