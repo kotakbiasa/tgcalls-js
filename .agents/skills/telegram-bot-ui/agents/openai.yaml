@@ -1,0 +1,19 @@
+# Optional Codex (OpenAI) skill metadata.
+# The core SKILL.md works across Claude Code, Codex, and other Agent Skills
+# hosts unchanged; this file only adds Codex-specific presentation/policy and is
+# ignored by hosts that don't use it. Schema per Codex "Build skills" docs.
+interface:
+  display_name: "Telegram Bot UI"
+  short_description: >-
+    Design and improve a Telegram bot's interface: message texts and microcopy,
+    button labels, inline and reply keyboards, action grouping and hierarchy,
+    colored buttons (style: primary/success/danger), custom emoji on buttons
+    (icon_custom_emoji_id), menus, commands, navigation, streaming and progress
+    feedback, cross-screen consistency, localization — plus message rendering
+    (HTML, MarkdownV2, entities, Rich Messages, tables). Preserves callback_data,
+    deep links, handlers, and translations.
+
+policy:
+  # Allow the model to select this skill automatically when a prompt matches the
+  # description (same intent as Claude Code auto-activation).
+  allow_implicit_invocation: true

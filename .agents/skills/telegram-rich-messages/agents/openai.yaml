@@ -1,0 +1,4 @@
+interface:
+  display_name: "Telegram Rich Messages"
+  short_description: "Create Bot API rich markdown messages"
+  default_prompt: "Use $telegram-rich-messages to create a polished Telegram rich markdown message with media-aware structure."
