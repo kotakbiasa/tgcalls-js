@@ -1,11 +1,11 @@
 # tgcalls-js
 
 **pytgcalls-style Telegram group call wrapper for Node.js** — stream audio into
-Telegram voice chats using any GramJS-family MTProto client (GramJS `telegram`,
-`teleproto`, …) on top of the official [`ntgcalls`](https://www.npmjs.com/package/ntgcalls)
+Telegram voice chats using GramJS-family clients (`telegram`, `teleproto`) or
+`mtcute` (`@mtcute/node`, `@mtcute/core`) on top of the official [`ntgcalls`](https://www.npmjs.com/package/ntgcalls)
 native binding (C++ WebRTC core by the pytgcalls team, prebuilt binaries, no compiling).
 
-Status: v0.2.0 — audio + video + screen share (presentation). Tested with teleproto 1.229 on Node 24 / Linux x64.
+Status: v0.2.0 — audio + video + screen share (presentation). Tested with teleproto 1.229 and mtcute 0.32 on Node 20+.
 
 ## Install
 
@@ -19,7 +19,9 @@ npm install github:kotakbiasa/tgcalls-js
 Windows x64 — no compiler needed. You also need `ffmpeg` on PATH (and
 `yt-dlp` only if you use `joinYouTube`).
 
-## Quick start (GramJS)
+## Quick start
+
+### GramJS / teleproto
 
 ```js
 import { TelegramClient } from 'telegram';
@@ -33,14 +35,24 @@ const tg = new TgCallsClient({ client });
 
 await tg.join(-1001234567890, { kind: 'file', path: './song.mp3' });
 console.log('streaming…');
-
-// later:
-await tg.pause(chatId);
-await tg.resume(chatId);
-await tg.mute(chatId);
-await tg.setSource(chatId, { kind: 'file', path: './next.mp3' }); // queue, no rejoin
-await tg.leave(chatId);
 ```
+
+### mtcute
+
+```js
+import { TelegramClient } from '@mtcute/node';
+import { TgCallsClient } from 'tgcalls-js';
+
+const client = new TelegramClient({ apiId: API_ID, apiHash: API_HASH, storage: 'account.session' });
+await client.start();
+
+// Client type is automatically detected:
+const tg = new TgCallsClient({ client });
+
+await tg.join(-1001234567890, { kind: 'file', path: './song.mp3' });
+console.log('streaming…');
+```
+
 
 ### Video and presentation
 

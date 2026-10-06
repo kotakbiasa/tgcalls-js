@@ -279,6 +279,117 @@ async function main(): Promise<void> {
   assert.equal(tgIdleFail.isActive(-1001234567890), false);
   assert.equal(leaveOnIdleFail, true, 'failed joinIdle sends LeaveGroupCall');
 
+  // --- MTCUTE CLIENT TESTS
+  const mtcuteCalls: Array<{ method: string; args: Record<string, unknown> }> = [];
+  let mtcuteRawHandler: ((u: unknown) => void) | null = null;
+
+  const mtcuteClient: any = {
+    async call(request: unknown) {
+      const req = request as { _: string; [key: string]: unknown };
+      mtcuteCalls.push({ method: req._, args: req });
+      if (req._ === 'channels.getFullChannel') {
+        return {
+          fullChat: { call: { id: 987654321n, accessHash: 1122334455n } },
+        };
+      }
+      if (req._ === 'phone.joinGroupCall') {
+        return {
+          _: 'updates',
+          updates: [{ _: 'updateGroupCallConnection', params: { data: CONNECTION_PARAMS } }],
+        };
+      }
+      if (req._ === 'phone.leaveGroupCall') {
+        return {};
+      }
+      return {};
+    },
+    async resolvePeer(ref: unknown) {
+      if (ref === 'mychannel' || ref === '@mychannel') {
+        return { _: 'inputPeerChannel', channelId: 1234567890, accessHash: 99999n };
+      }
+      return { _: 'inputPeerChannel', channelId: 1234567890, accessHash: 99999n };
+    },
+    async getChat(ref: unknown) {
+      if (ref === 'mychannel') {
+        return { id: -1001234567890n };
+      }
+      return { id: -1001234567890n };
+    },
+    onRawUpdate: {
+      add(cb: (u: unknown) => void) {
+        mtcuteRawHandler = cb;
+      },
+      remove() {
+        mtcuteRawHandler = null;
+      },
+    },
+  };
+
+  const tgMtcute = new TgCallsClient({ client: mtcuteClient });
+
+  // mtcute join (file source)
+  const mtcuteRes = await tgMtcute.join(-1001234567890, { kind: 'file', path: '/tmp/test.mp3' });
+  assert.equal(mtcuteRes.chatId, -1001234567890n);
+  assert.equal(tgMtcute.isActive(-1001234567890), true);
+
+  // verify TL request recorded
+  const mtcuteJoin = mtcuteCalls.find((c) => c.method === 'phone.joinGroupCall');
+  assert.ok(mtcuteJoin, 'mtcute phone.joinGroupCall invoked');
+  const mtcuteJoinSsrc = JSON.parse((mtcuteJoin!.args.params as { data: string }).data).ssrc as number;
+  assert.equal(mtcuteRes.ssrc, mtcuteJoinSsrc, 'mtcute ssrc matches');
+
+  // mtcute controls
+  assert.equal(await tgMtcute.pause(-1001234567890), true);
+  assert.equal(await tgMtcute.resume(-1001234567890), true);
+  assert.equal(await tgMtcute.mute(-1001234567890), true);
+  assert.equal(await tgMtcute.unmute(-1001234567890), true);
+
+  // mtcute leave
+  await tgMtcute.leave(-1001234567890);
+  assert.equal(tgMtcute.isActive(-1001234567890), false);
+  const mtcuteLeave = mtcuteCalls.find((c) => c.method === 'phone.leaveGroupCall');
+  assert.ok(mtcuteLeave, 'mtcute phone.leaveGroupCall invoked');
+  assert.equal(mtcuteLeave!.args.source, mtcuteJoinSsrc, 'mtcute leave uses join ssrc');
+
+  // mtcute username resolution
+  const resolvedId = await tgMtcute.resolveChatId('mychannel');
+  assert.equal(resolvedId, -1001234567890n, 'mtcute resolveChatId works with string handles');
+
+  // mtcute connection params delivered via onRawUpdate
+  mtcuteCalls.length = 0;
+  const mtcuteClient2: any = {
+    async call(request: unknown) {
+      const req = request as { _: string; [key: string]: unknown };
+      mtcuteCalls.push({ method: req._, args: req });
+      if (req._ === 'channels.getFullChannel') {
+        return {
+          fullChat: { call: { id: 987654321n, accessHash: 1122334455n } },
+        };
+      }
+      if (req._ === 'phone.joinGroupCall') {
+        setTimeout(() => {
+          mtcuteRawHandler?.({
+            update: { _: 'updateGroupCallConnection', params: { data: CONNECTION_PARAMS } },
+          });
+        }, 50);
+        return { _: 'updates', updates: [] };
+      }
+      return {};
+    },
+    onRawUpdate: {
+      add(cb: (u: unknown) => void) {
+        mtcuteRawHandler = cb;
+      },
+      remove() {
+        mtcuteRawHandler = null;
+      },
+    },
+  };
+  const tgMtcute2 = new TgCallsClient({ client: mtcuteClient2 });
+  const mtcuteRes2 = await tgMtcute2.join(-1001234567890, { kind: 'file', path: '/tmp/test.mp3' });
+  assert.equal(mtcuteRes2.chatId, -1001234567890n);
+  await tgMtcute2.leave(-1001234567890);
+
   console.log('ALL TESTS PASSED');
   process.exit(0); // native WebRTC threads keep the loop alive otherwise
 }

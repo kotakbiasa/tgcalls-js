@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Feat: Add support for mtcute (`@mtcute/node`, `@mtcute/core`) via modular `MTProtoAdapter` and automatic client detection.
+- Feat: Export `MtcuteAdapter`, `GramjsAdapter`, `createAdapter`, `isMtcuteClient`, and `isGramjsClient`.
+
 - Fix: `setSource()` no longer drops the camera/screen video channel (ntgcalls removes any device omitted from `setStreamSources`); the video is rebuilt from the new source.
 - Fix: `streamEnd` fires once per playback. With video active it waits for both audio and video to end (was: once per stream type, auto-leaving early).
 - Fix: a failed `join()` now stops the native call and sends `LeaveGroupCall` (no zombie participant).
