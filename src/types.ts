@@ -16,6 +16,40 @@ export interface MTProtoLike {
   removeEventHandler?(cb: unknown, opts?: unknown): void;
 }
 
+/**
+ * Minimal MTProto client surface for mtcute (@mtcute/node, @mtcute/core).
+ */
+export interface MtcuteLike {
+  call(request: unknown): Promise<unknown>;
+  resolvePeer?(ref: unknown): Promise<unknown>;
+  resolveChannel?(ref: unknown): Promise<unknown>;
+  getChat?(ref: unknown): Promise<{ id: number | bigint | string }>;
+  onRawUpdate: {
+    add(cb: (update: any) => void): unknown;
+    remove?(cb: any): void;
+  };
+}
+
+/**
+ * Adapter interface decoupling TgCallsClient from any specific MTProto library.
+ */
+export interface MTProtoAdapter {
+  readonly isAdapter: true;
+  resolveChatId(chat: ChatRef): Promise<bigint>;
+  getGroupCall(chatId: bigint, allowCreate: boolean): Promise<unknown>;
+  joinGroupCall(inputCall: unknown, joinParams: string, options: JoinOptions): Promise<unknown>;
+  leaveGroupCall(inputCall: unknown, ssrc: number): Promise<void>;
+  joinPresentationCall(inputCall: unknown, presentationParams: string): Promise<unknown>;
+  leavePresentationCall(inputCall: unknown): Promise<void>;
+  extractConnectionParams(result: unknown): string | null;
+  installUpdateHandler(
+    onUpdate: (update: unknown) => void,
+    onConnectionParams: (params: string) => void,
+  ): () => void;
+  dispose?(): void;
+}
+
+
 /** Audio source for streaming into a call. */
 export type AudioSource =
   /** Local audio/video file (any ffmpeg-readable format). */
@@ -93,9 +127,9 @@ export interface JoinResult {
 }
 
 export interface TgCallsOptions {
-  /** MTProto client (GramJS / teleproto TelegramClient). */
-  client: MTProtoLike;
-  /** Override TL namespace detection — normally auto-loaded from teleproto or telegram. */
+  /** MTProto client (GramJS / teleproto TelegramClient, mtcute TelegramClient, or custom MTProtoAdapter). */
+  client: MTProtoLike | MtcuteLike | MTProtoAdapter;
+  /** Override TL namespace detection — normally auto-loaded from teleproto or telegram (GramJS only). */
   Api?: unknown;
   /** ffmpeg binary (default "ffmpeg"). */
   ffmpegPath?: string;

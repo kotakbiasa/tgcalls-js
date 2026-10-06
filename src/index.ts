@@ -2,9 +2,9 @@
  * tgcalls-js — pytgcalls-style Telegram group call wrapper for Node.js.
  *
  * Built on the official `ntgcalls` native binding (C++ WebRTC core by the
- * pytgcalls team) and any GramJS-family MTProto client (GramJS / teleproto).
+ * pytgcalls team) and any supported MTProto client (GramJS / teleproto / mtcute).
  *
- * Join flow (mirrors ntgcalls/examples/python):
+ * Join flow:
  *   1. channels.getFullChannel(chat)          → full_chat.call (InputGroupCall)
  *   2. ntgcalls.createCall(chatId)            → native join params (JSON w/ ssrc)
  *   3. ntgcalls.setStreamSources(...)         → ffmpeg/yt-dlp PCM source
@@ -20,16 +20,13 @@ import type {
   ChatRef,
   JoinOptions,
   JoinResult,
-  MTProtoLike,
+  MTProtoAdapter,
   StreamEndInfo,
   TgCallsOptions,
   VideoOptions,
-  VideoQuality,
 } from './types.js';
-import { loadTl, loadEvents } from './tl.js';
+import { createAdapter, extractSsrc, sleep } from './adapters/index.js';
 import { audioDescription, videoDescription, resolveYouTube, resolveYouTubeStreams, probeVideo } from './media.js';
-
-type AnyApi = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 
 export interface TgCallsEvents {
   /** Fired when the native audio stream ends (e.g. file finished). */
@@ -38,25 +35,6 @@ export interface TgCallsEvents {
   connectionChange: (chatId: bigint, state: ConnectionState) => void | Promise<void>;
   /** Raw TL updates related to group calls (pass-through). */
   update: (update: unknown) => void | Promise<void>;
-}
-
-function toBigInt(v: unknown): bigint | undefined {
-  if (v === undefined || v === null) {return undefined;}
-  if (typeof v === 'bigint') {return v;}
-  if (typeof v === 'number') {return BigInt(v);}
-  if (typeof v === 'string') {return BigInt(v);}
-  if (typeof v === 'object' && typeof (v as { toString?: unknown }).toString === 'function') {
-    try {
-      return BigInt((v as { toString: () => string }).toString());
-    } catch {
-      return undefined;
-    }
-  }
-  return undefined;
-}
-
-function asBigInt0(v: unknown): bigint {
-  return toBigInt(v) ?? 0n;
 }
 
 /** Run a user event handler without letting a throw/reject crash the process. */
@@ -74,14 +52,13 @@ export class TgCallsClient {
   /** Direct access to the underlying native instance (advanced use). */
   readonly ntg: NTgCalls;
 
-  private readonly client: MTProtoLike;
-  private readonly Api: AnyApi;
+  private readonly adapter: MTProtoAdapter;
   private readonly opts: TgCallsOptions;
   private readonly calls = new Map<bigint, ActiveCall>();
   /** Chats with a join operation in progress; prevents duplicate parallel joins. */
   private readonly joining = new Set<bigint>();
   private readonly eventHandlers: Partial<TgCallsEvents> = {};
-  private updateCb: ((u: unknown) => void) | null = null;
+  private updateUninstall: (() => void) | null = null;
   private pendingConnectionParams: string | null = null;
   /** Connection updates have no reliable chat correlation, so consume them serially. */
   private connectionParamsQueue: Promise<void> = Promise.resolve();
@@ -97,8 +74,7 @@ export class TgCallsClient {
 
   constructor(opts: TgCallsOptions) {
     this.opts = opts;
-    this.client = opts.client;
-    this.Api = loadTl(opts.Api) as AnyApi;
+    this.adapter = createAdapter(opts.client, { Api: opts.Api });
     this.ntg = new NTgCalls();
   }
 
@@ -141,7 +117,7 @@ export class TgCallsClient {
     let inputCall: unknown;
     let joinParams: string | undefined;
     try {
-      inputCall = await this.getGroupCall(chatId, options.allowCreate === true);
+      inputCall = await this.adapter.getGroupCall(chatId, options.allowCreate === true);
 
       // Native join params — created exactly once; the SAME params string must
       // be sent in JoinGroupCall and its ssrc later reused for LeaveGroupCall.
@@ -154,10 +130,9 @@ export class TgCallsClient {
       this.ended.delete(chatId);
       await this.ntg.stop(chatId).catch(() => { /* already stopped */ });
       if (inputCall !== undefined && joinParams !== undefined) {
-        await this.client.invoke(new this.Api.phone.LeaveGroupCall({
-          call: inputCall,
-          source: extractSsrc(joinParams),
-        })).catch(() => { /* never joined / already gone */ });
+        await this.adapter.leaveGroupCall(inputCall, extractSsrc(joinParams)).catch(() => {
+          /* never joined / already gone */
+        });
       }
       throw err;
     } finally {
@@ -295,26 +270,23 @@ export class TgCallsClient {
     let joinParams: string | undefined;
     let joinAttempted = false;
     try {
-      inputCall = await this.getGroupCall(chatId, false).catch(() => null);
+      inputCall = await this.adapter.getGroupCall(chatId, false).catch(() => null);
       if (inputCall === null) {
         if (options.allowCreate !== true) {
           throw new Error('No active voice chat in this chat. Start one first, or pass allowCreate: true.');
         }
-        await this.getGroupCall(chatId, true); // creates (rtmpStream) and returns it
-        inputCall = await this.getGroupCall(chatId, false);
+        await this.adapter.getGroupCall(chatId, true); // creates (rtmpStream) and returns it
+        inputCall = await this.adapter.getGroupCall(chatId, false);
       }
 
       joinParams = await this.ntg.createCall(chatId);
       const params = await this.withConnectionParams(async () => {
         joinAttempted = true;
-        return this.client.invoke(new this.Api.phone.JoinGroupCall({
-          call: inputCall,
-          params: new this.Api.DataJSON({ data: joinParams }),
+        return this.adapter.joinGroupCall(inputCall, joinParams!, {
+          ...options,
           muted: true,
           videoStopped: true,
-          joinAs: new this.Api.InputPeerSelf(),
-          ...(options.inviteHash !== undefined ? { inviteHash: options.inviteHash } : {}),
-        }));
+        });
       }, 'JoinGroupCall succeeded but no UpdateGroupCallConnection was received');
       await this.ntg.connect(chatId, params, false);
 
@@ -338,10 +310,9 @@ export class TgCallsClient {
       this.ended.delete(chatId);
       await this.ntg.stop(chatId).catch(() => { /* already stopped */ });
       if (joinAttempted && inputCall !== undefined && joinParams !== undefined) {
-        await this.client.invoke(new this.Api.phone.LeaveGroupCall({
-          call: inputCall,
-          source: extractSsrc(joinParams),
-        })).catch(() => { /* join failed or participant already gone */ });
+        await this.adapter.leaveGroupCall(inputCall, extractSsrc(joinParams)).catch(() => {
+          /* join failed or participant already gone */
+        });
       }
       throw err;
     } finally {
@@ -366,11 +337,7 @@ export class TgCallsClient {
     } catch { /* already stopped */ }
     if (active) {
       try {
-        // active.call is the exact InputGroupCall instance from getFullChannel.
-        await this.client.invoke(new this.Api.phone.LeaveGroupCall({
-          call: active.call,
-          source: active.ssrc,
-        }));
+        await this.adapter.leaveGroupCall(active.call, active.ssrc);
       } catch { /* call may already be gone */ }
     }
   }
@@ -486,9 +453,7 @@ export class TgCallsClient {
       await this.ntg.stopPresentation(id);
     } catch { /* may not be active */ }
     try {
-      await this.client.invoke(new this.Api.phone.LeaveGroupCallPresentation({
-        call: this.calls.get(id)?.call,
-      }));
+      await this.adapter.leavePresentationCall(this.calls.get(id)?.call);
     } catch { /* best-effort */ }
     this.videoState.delete(id);
     this.ended.delete(id);
@@ -539,107 +504,7 @@ export class TgCallsClient {
 
   /** Resolve any chat ref to a marked id (-100... for channels/supergroups). */
   async resolveChatId(chat: ChatRef): Promise<bigint> {
-    if (typeof chat === 'number' || typeof chat === 'bigint') {
-      return BigInt(chat);
-    }
-    const s = chat.trim();
-    if (/^-?\d+$/.test(s)) {
-      return BigInt(s);
-    }
-    const handle = s.replace(/^https?:\/\/t\.me\//i, '').replace(/^@/, '').replace(/\/+$/, '');
-    if (this.client.getEntity) {
-      try {
-        const entity = await this.client.getEntity(handle);
-        const marked = markedIdFromEntity(entity);
-        if (marked !== undefined) {return marked;}
-      } catch { /* fall through */ }
-    }
-    throw new Error(
-      `Cannot resolve chat "${chat}" — pass a numeric chat id (e.g. -1001234567890), ` +
-      'or make sure the client has the entity cached.',
-    );
-  }
-
-  private async getGroupCall(chatId: bigint, allowCreate: boolean): Promise<unknown> {
-    let peer: unknown = chatId;
-    let channelInput: unknown = chatId;
-    let isBasicChat = false;
-
-    const clientAny = this.client as any;
-    if (clientAny.getInputEntity) {
-      try {
-        const inputEntity = await clientAny.getInputEntity(chatId);
-        if (inputEntity) {
-          peer = inputEntity;
-          if (inputEntity.className === 'InputPeerChannel' || (inputEntity as any).channelId !== undefined) {
-            channelInput = new this.Api.InputChannel({
-              channelId: (inputEntity as any).channelId,
-              accessHash: (inputEntity as any).accessHash,
-            });
-          } else if (inputEntity.className === 'InputPeerChat' || (inputEntity as any).chatId !== undefined) {
-            isBasicChat = true;
-          }
-        }
-      } catch {
-        /* fallback to chatId */
-      }
-    }
-
-    const fetchCall = async () => {
-      if (isBasicChat && this.Api.messages?.GetFullChat) {
-        try {
-          const rawId = typeof chatId === 'bigint' && chatId < 0n ? -chatId : chatId;
-          const full = (await this.client.invoke(
-            new this.Api.messages.GetFullChat({ chatId: (peer as any).chatId || rawId }),
-          )) as { fullChat?: { call?: { id: unknown; accessHash: unknown } } | undefined };
-          return full.fullChat?.call;
-        } catch { /* ignore */ }
-      }
-      try {
-        const full = (await this.client.invoke(
-          new this.Api.channels.GetFullChannel({ channel: channelInput }),
-        )) as { fullChat?: { call?: { id: unknown; accessHash: unknown } } | undefined };
-        return full.fullChat?.call;
-      } catch (err) {
-        if (this.Api.messages?.GetFullChat) {
-          try {
-            const rawId = typeof chatId === 'bigint' && chatId < 0n ? -chatId : chatId;
-            const full = (await this.client.invoke(
-              new this.Api.messages.GetFullChat({ chatId: rawId }),
-            )) as { fullChat?: { call?: { id: unknown; accessHash: unknown } } | undefined };
-            return full.fullChat?.call;
-          } catch { /* ignore */ }
-        }
-        throw err;
-      }
-    };
-
-    const call = await fetchCall().catch(() => undefined);
-    if (call) {
-      return new this.Api.InputGroupCall({
-        id: asBigInt0(call.id),
-        accessHash: asBigInt0(call.accessHash),
-      });
-    }
-
-    if (allowCreate) {
-      await this.client.invoke(new this.Api.phone.CreateGroupCall({
-        peer,
-        randomId: Math.floor(Math.random() * 2 ** 31),
-        title: 'Voice Chat',
-        rtmpStream: false,
-      }));
-      await sleep(1000);
-      const call2 = await fetchCall().catch(() => undefined);
-      if (call2) {
-        return new this.Api.InputGroupCall({
-          id: asBigInt0(call2.id),
-          accessHash: asBigInt0(call2.accessHash),
-        });
-      }
-      throw new Error('Group call created but not visible yet — retry join()');
-    }
-    throw new Error('No active voice chat in this chat. Start one first, or pass allowCreate: true.');
+    return this.adapter.resolveChatId(chat);
   }
 
   private async joinGroupCall(
@@ -648,45 +513,21 @@ export class TgCallsClient {
     joinParams: string,
     options: JoinOptions,
   ): Promise<string> {
-    return this.withConnectionParams(() => this.client.invoke(new this.Api.phone.JoinGroupCall({
-      call: inputCall,
-      params: new this.Api.DataJSON({ data: joinParams }),
-      muted: options.muted === true,
-      videoStopped: options.videoStopped ?? true,
-      joinAs: new this.Api.InputPeerSelf(),
-      ...(options.inviteHash !== undefined ? { inviteHash: options.inviteHash } : {}),
-    })), 'JoinGroupCall succeeded but no UpdateGroupCallConnection was received');
+    return this.withConnectionParams(() => this.adapter.joinGroupCall(inputCall, joinParams, options),
+      'JoinGroupCall succeeded but no UpdateGroupCallConnection was received');
   }
 
   private installUpdateHandler(): void {
-    if (this.updateCb !== null || this.client.addEventHandler === undefined) {return;}
-    this.updateCb = (update: unknown) => {
-      const u = update as { className?: string; params?: { data?: string } };
-      fireAndForget(() => this.eventHandlers.update?.(u));
-      if (u.className === 'UpdateGroupCallConnection' && typeof u.params?.data === 'string') {
-        this.pendingConnectionParams = u.params.data;
-      }
-    };
-    // teleproto/GramJS dispatch calls builder.resolve()/build()/filter().
-    // Use the package's Raw builder when resolvable; otherwise a minimal
-    // compatible builder that passes every raw update through.
-    const events = loadEvents();
-    const builder = events?.Raw
-      ? new events.Raw({ types: [this.Api.UpdateGroupCallConnection] })
-      : {
-          resolved: true,
-          async resolve() { /* nothing to resolve */ },
-          build: (e: unknown) => {return e;},
-          filter: (e: unknown) => {return e;},
-        };
-    this.client.addEventHandler(this.updateCb, builder);
+    if (this.updateUninstall !== null) {return;}
+    this.updateUninstall = this.adapter.installUpdateHandler(
+      (u) => fireAndForget(() => this.eventHandlers.update?.(u)),
+      (params) => { this.pendingConnectionParams = params; },
+    );
   }
 
   private async joinPresentationCall(inputCall: unknown, presentationParams: string): Promise<string> {
-    return this.withConnectionParams(() => this.client.invoke(new this.Api.phone.JoinGroupCallPresentation({
-      call: inputCall,
-      params: new this.Api.DataJSON({ data: presentationParams }),
-    })), 'JoinGroupCallPresentation succeeded but no UpdateGroupCallConnection was received');
+    return this.withConnectionParams(() => this.adapter.joinPresentationCall(inputCall, presentationParams),
+      'JoinGroupCallPresentation succeeded but no UpdateGroupCallConnection was received');
   }
 
   /**
@@ -702,8 +543,8 @@ export class TgCallsClient {
     try {
       this.installUpdateHandler();
       this.pendingConnectionParams = null;
-      const result = await request() as { updates?: Array<Record<string, unknown>> } | undefined;
-      const inline = findConnectionParams(result?.updates ?? []);
+      const result = await request();
+      const inline = this.adapter.extractConnectionParams(result);
       if (inline !== null) {return inline;}
       for (let i = 0; i < 15; i++) {
         await sleep(200);
@@ -722,76 +563,18 @@ export class TgCallsClient {
 
   /** Cleanup for consumers disposing the MTProto client. */
   dispose(): void {
-    if (this.updateCb !== null && this.client.removeEventHandler !== undefined) {
-      this.client.removeEventHandler(this.updateCb, {});
-      this.updateCb = null;
+    if (this.updateUninstall !== null) {
+      this.updateUninstall();
+      this.updateUninstall = null;
     }
+    this.adapter.dispose?.();
     this.calls.clear();
     this.videoState.clear();
     this.ended.clear();
   }
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-/** Find UpdateGroupCallConnection.params.data inside an updates list. */
-function findConnectionParams(updates: Array<Record<string, unknown>>): string | null {
-  for (const upd of updates) {
-    if (upd.className === 'UpdateGroupCallConnection') {
-      const params = upd.params as { data?: unknown } | undefined;
-      if (typeof params?.data === 'string') {
-        return params.data;
-      }
-    }
-  }
-  return null;
-}
-
-/** Extract our audio ssrc from the native join params JSON. */
-function extractSsrc(joinParams: string): number {
-  try {
-    const parsed = JSON.parse(joinParams) as { ssrc?: number };
-    return typeof parsed.ssrc === 'number' ? parsed.ssrc : 0;
-  } catch {
-    return 0;
-  }
-}
-
-/**
- * Best-effort marked-id extraction from a GramJS entity object.
- * GramJS uses Bot-API-style marked ids: channels = -100..., basic chats = -id.
- */
-function markedIdFromEntity(entity: unknown): bigint | undefined {
-  const e = entity as {
-    id?: unknown;
-    channelId?: unknown;
-    chatId?: unknown;
-    userId?: unknown;
-    className?: string;
-  };
-  if (e === null || typeof e !== 'object') {return undefined;}
-  if (e.className === 'Channel' && e.id !== undefined) {
-    const raw = toBigInt(e.id);
-    return raw === undefined ? undefined : -(1_000_000_000_000n + raw);
-  }
-  if (e.className === 'Chat' && e.id !== undefined) {
-    const raw = toBigInt(e.id);
-    return raw === undefined ? undefined : -raw;
-  }
-  if (e.channelId !== undefined) {
-    const raw = toBigInt(e.channelId);
-    return raw === undefined ? undefined : -(1_000_000_000_000n + raw);
-  }
-  if (e.chatId !== undefined) {
-    const raw = toBigInt(e.chatId);
-    return raw === undefined ? undefined : -raw;
-  }
-  if (e.userId !== undefined) {return toBigInt(e.userId);}
-  return undefined;
-}
-
+export * from './adapters/index.js';
 export { loadTl, resetTlCache, loadEvents } from './tl.js';
 export { resolveYouTube, resolveYouTubeStreams, pcmCommand, audioDescription, videoDescription, probeVideo } from './media.js';
 export { VideoQuality } from './types.js';
@@ -802,6 +585,8 @@ export type {
   JoinOptions,
   JoinResult,
   MTProtoLike,
+  MtcuteLike,
+  MTProtoAdapter,
   StreamEndInfo,
   TgCallsOptions,
   VideoOptions,
