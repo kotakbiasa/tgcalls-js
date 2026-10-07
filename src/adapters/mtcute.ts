@@ -1,6 +1,6 @@
 import type { ChatRef, JoinOptions } from '../types.js';
 import type { MtcuteLike, MTProtoAdapter } from './types.js';
-import { asBigInt0, findConnectionParams, sleep } from './utils.js';
+import { findConnectionParams, sleep } from './utils.js';
 
 export class MtcuteAdapter implements MTProtoAdapter {
   readonly isAdapter = true as const;
@@ -148,8 +148,10 @@ export class MtcuteAdapter implements MTProtoAdapter {
     if (call) {
       return {
         _: 'inputGroupCall',
-        id: asBigInt0(call.id),
-        accessHash: asBigInt0(call.accessHash),
+        // Keep mtcute's TL Long instances intact. Its TL encoder expects the
+        // low/high representation and does not serialize JavaScript bigint here.
+        id: call.id,
+        accessHash: call.accessHash,
       };
     }
 
@@ -169,8 +171,8 @@ export class MtcuteAdapter implements MTProtoAdapter {
       if (call2) {
         return {
           _: 'inputGroupCall',
-          id: asBigInt0(call2.id),
-          accessHash: asBigInt0(call2.accessHash),
+          id: call2.id,
+          accessHash: call2.accessHash,
         };
       }
       throw new Error('Group call created but not visible yet — retry join()');

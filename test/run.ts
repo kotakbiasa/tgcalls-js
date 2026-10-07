@@ -133,6 +133,49 @@ function testMtcuteSubscriptionCleanup(): void {
   assert.equal(unsubscribeCount, 1, 'mtcute subscription cleanup is idempotent');
 }
 
+async function testMtcuteGroupCallPreservesTlLongs(): Promise<void> {
+  const callId = {
+    low: 987654321,
+    high: 0,
+    unsigned: false,
+    toString() {return '987654321';},
+  };
+  const accessHash = {
+    low: 1122334455,
+    high: 0,
+    unsigned: false,
+    toString() {return '1122334455';},
+  };
+  const requests: Array<{ _: string; [key: string]: unknown }> = [];
+  const adapter = new MtcuteAdapter({
+    async call(value: unknown) {
+      const request = value as { _: string; [key: string]: unknown };
+      requests.push(request);
+      if (request._ === 'channels.getFullChannel') {
+        return { fullChat: { call: { id: callId, accessHash } } };
+      }
+      return {};
+    },
+    onRawUpdate: { add() {} },
+  });
+
+  const inputCall = await adapter.getGroupCall(-1001234567890n, false) as {
+    _: string;
+    id: unknown;
+    accessHash: unknown;
+  };
+  assert.equal(inputCall._, 'inputGroupCall');
+  assert.strictEqual(inputCall.id, callId, 'mtcute TL Long id is preserved by reference');
+  assert.strictEqual(inputCall.accessHash, accessHash, 'mtcute TL Long accessHash is preserved by reference');
+  assert.equal((inputCall.id as typeof callId).low, 987654321);
+  assert.equal((inputCall.id as typeof callId).high, 0);
+
+  await adapter.joinGroupCall(inputCall, CONNECTION_PARAMS, { muted: false });
+  const joinRequest = requests.find((request) => request._ === 'phone.joinGroupCall');
+  assert.ok(joinRequest, 'mtcute phone.joinGroupCall invoked');
+  assert.strictEqual(joinRequest.call, inputCall, 'the preserved inputGroupCall is passed to mtcute unchanged');
+}
+
 async function testRtmpCreateOption(): Promise<void> {
   let created = false;
   calls.length = 0;
@@ -212,6 +255,7 @@ async function main(): Promise<void> {
   testExplicitTlNamespacesStayLocal();
   testGramjsHandlerRemovalUsesSameBuilder();
   testMtcuteSubscriptionCleanup();
+  await testMtcuteGroupCallPreservesTlLongs();
   await testRtmpCreateOption();
 
   // Build the video fixture FIRST: forking (spawnSync) after ntgcalls' native
