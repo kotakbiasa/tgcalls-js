@@ -36,7 +36,8 @@ export interface MtcuteLike {
 export interface MTProtoAdapter {
   readonly isAdapter: true;
   resolveChatId(chat: ChatRef): Promise<bigint>;
-  getGroupCall(chatId: bigint, allowCreate: boolean): Promise<unknown>;
+  /** Create a call if missing; `rtmpStream` is forwarded to CreateGroupCall. */
+  getGroupCall(chatId: bigint, allowCreate: boolean, rtmpStream?: boolean): Promise<unknown>;
   joinGroupCall(inputCall: unknown, joinParams: string, options: JoinOptions): Promise<unknown>;
   leaveGroupCall(inputCall: unknown, ssrc: number): Promise<void>;
   joinPresentationCall(inputCall: unknown, presentationParams: string): Promise<unknown>;
@@ -129,7 +130,7 @@ export interface JoinResult {
 export interface TgCallsOptions {
   /** MTProto client (GramJS / teleproto TelegramClient, mtcute TelegramClient, or custom MTProtoAdapter). */
   client: MTProtoLike | MtcuteLike | MTProtoAdapter;
-  /** Override TL namespace detection — normally auto-loaded from teleproto or telegram (GramJS only). */
+  /** TL API namespace for this client. Pass per client when using telegram and teleproto together. */
   Api?: unknown;
   /** ffmpeg binary (default "ffmpeg"). */
   ffmpegPath?: string;
