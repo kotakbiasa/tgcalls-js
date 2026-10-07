@@ -55,6 +55,8 @@ export class TgCallsClient {
   private readonly adapter: MTProtoAdapter;
   private readonly opts: TgCallsOptions;
   private readonly calls = new Map<bigint, ActiveCall>();
+  /** Previously resolved usernames/links, used by synchronous introspection. */
+  private readonly chatAliases = new Map<string, bigint>();
   /** Chats with a join operation in progress; prevents duplicate parallel joins. */
   private readonly joining = new Set<bigint>();
   private readonly eventHandlers: Partial<TgCallsEvents> = {};
@@ -91,14 +93,16 @@ export class TgCallsClient {
     return [...this.calls.keys()];
   }
 
-  /** Info about one active call, or null. */
+  /** Info about one active call, or null. Resolve a username first for this sync lookup. */
   getCall(chatId: ChatRef): ActiveCall | null {
-    return this.calls.get(BigInt(chatId)) ?? null;
+    const id = this.cachedChatId(chatId);
+    return id === undefined ? null : (this.calls.get(id) ?? null);
   }
 
-  /** True when streaming audio into this chat right now. */
+  /** True when streaming audio into this chat right now; resolve aliases first. */
   isActive(chatId: ChatRef): boolean {
-    return this.calls.has(BigInt(chatId));
+    const id = this.cachedChatId(chatId);
+    return id !== undefined && this.calls.has(id);
   }
 
   // ------------------------------------------------------------------ join
@@ -168,7 +172,7 @@ export class TgCallsClient {
     }
     await this.ntg.setStreamSources(chatId, StreamMode.CAPTURE, media);
 
-    const connParams = await this.joinGroupCall(chatId, inputCall, joinParams, {
+    const connParams = await this.joinGroupCall(inputCall, joinParams, {
       ...options,
       // videoStopped=false only when we actually share camera video.
       muted: options.muted === true,
@@ -255,9 +259,9 @@ export class TgCallsClient {
    * Join a voice chat WITHOUT streaming audio (idle presence).
    *
    * On UDP-restricted hosts the regular RTC join gets ICE-timeout-kicked by
-   * Telegram after ~25s. Proven-stable alternative: ensure the call exists as
-   * an RTMP-stream call (CreateGroupCall rtmpStream) and join muted with no
-   * local sources — the server keeps a broadcaster in the call indefinitely.
+   * Telegram after ~25s. When creating a missing call with allowCreate, this
+   * creates it in RTMP-stream mode and joins muted with no local sources. An
+   * already-existing call is not converted, so its connection mode is unchanged.
    */
   async joinIdle(chat: ChatRef, options: JoinOptions = {}): Promise<JoinResult> {
     const chatId = await this.resolveChatId(chat);
@@ -275,8 +279,9 @@ export class TgCallsClient {
         if (options.allowCreate !== true) {
           throw new Error('No active voice chat in this chat. Start one first, or pass allowCreate: true.');
         }
-        await this.adapter.getGroupCall(chatId, true); // creates (rtmpStream) and returns it
-        inputCall = await this.adapter.getGroupCall(chatId, false);
+        // RTMP mode keeps idle presence alive on hosts that cannot establish
+        // an RTC media path. Existing calls cannot be converted to RTMP.
+        inputCall = await this.adapter.getGroupCall(chatId, true, true);
       }
 
       joinParams = await this.ntg.createCall(chatId);
@@ -327,7 +332,7 @@ export class TgCallsClient {
    * Both steps are best-effort so a half-dead call still cleans up.
    */
   async leave(chatId: ChatRef): Promise<void> {
-    const id = BigInt(chatId);
+    const id = await this.resolveChatId(chatId);
     const active = this.calls.get(id);
     this.calls.delete(id);
     this.videoState.delete(id);
@@ -335,6 +340,11 @@ export class TgCallsClient {
     try {
       await this.ntg.stop(id);
     } catch { /* already stopped */ }
+    if (active?.presentationActive) {
+      try {
+        await this.adapter.leavePresentationCall(active.call);
+      } catch { /* presentation may already be gone */ }
+    }
     if (active) {
       try {
         await this.adapter.leaveGroupCall(active.call, active.ssrc);
@@ -343,30 +353,35 @@ export class TgCallsClient {
   }
 
   async pause(chatId: ChatRef): Promise<boolean> {
-    return this.ntg.pause(BigInt(chatId));
+    const id = await this.resolveChatId(chatId);
+    return this.ntg.pause(id);
   }
 
   async resume(chatId: ChatRef): Promise<boolean> {
-    return this.ntg.resume(BigInt(chatId));
+    const id = await this.resolveChatId(chatId);
+    return this.ntg.resume(id);
   }
 
   async mute(chatId: ChatRef): Promise<boolean> {
-    const ok = await this.ntg.mute(BigInt(chatId));
-    const active = this.calls.get(BigInt(chatId));
+    const id = await this.resolveChatId(chatId);
+    const ok = await this.ntg.mute(id);
+    const active = this.calls.get(id);
     if (active) {active.muted = true;}
     return ok;
   }
 
   async unmute(chatId: ChatRef): Promise<boolean> {
-    const ok = await this.ntg.unmute(BigInt(chatId));
-    const active = this.calls.get(BigInt(chatId));
+    const id = await this.resolveChatId(chatId);
+    const ok = await this.ntg.unmute(id);
+    const active = this.calls.get(id);
     if (active) {active.muted = false;}
     return ok;
   }
 
   /** Seconds streamed so far. */
   async time(chatId: ChatRef): Promise<number> {
-    const t = await this.ntg.time(BigInt(chatId), StreamMode.CAPTURE);
+    const id = await this.resolveChatId(chatId);
+    const t = await this.ntg.time(id, StreamMode.CAPTURE);
     return Number(t);
   }
 
@@ -375,7 +390,7 @@ export class TgCallsClient {
    * Use on streamEnd to start the next track in the same call.
    */
   async setSource(chatId: ChatRef, source: AudioSource): Promise<void> {
-    const id = BigInt(chatId);
+    const id = await this.resolveChatId(chatId);
     if (!this.calls.has(id)) {
       throw new Error(`No active call in chat ${id}`);
     }
@@ -406,7 +421,7 @@ export class TgCallsClient {
    * not available in STREAM/RTMP connection modes.
    */
   async startPresentation(chatId: ChatRef, source: Exclude<AudioSource, { kind: 'shell' }>, video: VideoOptions = {}): Promise<void> {
-    const id = BigInt(chatId);
+    const id = await this.resolveChatId(chatId);
     if (!this.calls.has(id)) {
       throw new Error(`No active call in chat ${id}`);
     }
@@ -445,7 +460,7 @@ export class TgCallsClient {
 
   /** Stop the presentation channel (screen share off, main call stays). */
   async stopPresentation(chatId: ChatRef): Promise<void> {
-    const id = BigInt(chatId);
+    const id = await this.resolveChatId(chatId);
     if (!this.calls.has(id)) {
       throw new Error(`No active call in chat ${id}`);
     }
@@ -504,11 +519,42 @@ export class TgCallsClient {
 
   /** Resolve any chat ref to a marked id (-100... for channels/supergroups). */
   async resolveChatId(chat: ChatRef): Promise<bigint> {
-    return this.adapter.resolveChatId(chat);
+    const cached = this.cachedChatId(chat);
+    if (cached !== undefined) {return cached;}
+    const id = await this.adapter.resolveChatId(chat);
+    if (typeof chat === 'string') {
+      const key = this.chatAliasKey(chat);
+      if (key !== null) {this.chatAliases.set(key, id);}
+    }
+    return id;
+  }
+
+  /** Resolve numeric ids or aliases already looked up by this client, synchronously. */
+  private cachedChatId(chat: ChatRef): bigint | undefined {
+    if (typeof chat === 'bigint') {return chat;}
+    if (typeof chat === 'number') {
+      try {return BigInt(chat);} catch {return undefined;}
+    }
+    const value = chat.trim();
+    if (/^-?\d+$/.test(value)) {
+      try {return BigInt(value);} catch {return undefined;}
+    }
+    const key = this.chatAliasKey(value);
+    return key === null ? undefined : this.chatAliases.get(key);
+  }
+
+  private chatAliasKey(chat: string): string | null {
+    const value = chat.trim();
+    if (!value || /^-?\d+$/.test(value)) {return null;}
+    const handle = value
+      .replace(/^https?:\/\/t\.me\//i, '')
+      .replace(/^@/, '')
+      .replace(/\/+$/, '')
+      .toLowerCase();
+    return handle || null;
   }
 
   private async joinGroupCall(
-    chatId: bigint,
     inputCall: unknown,
     joinParams: string,
     options: JoinOptions,
@@ -561,14 +607,16 @@ export class TgCallsClient {
     }
   }
 
-  /** Cleanup for consumers disposing the MTProto client. */
-  dispose(): void {
+  /** Stop active calls and remove update handlers before disposing the MTProto client. */
+  async dispose(): Promise<void> {
+    await Promise.all([...this.calls.keys()].map((chatId) => this.leave(chatId)));
     if (this.updateUninstall !== null) {
       this.updateUninstall();
       this.updateUninstall = null;
     }
     this.adapter.dispose?.();
     this.calls.clear();
+    this.chatAliases.clear();
     this.videoState.clear();
     this.ended.clear();
   }

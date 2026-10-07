@@ -1,6 +1,6 @@
 import { strict as assert } from 'assert';
 import { spawnSync } from 'child_process';
-import { TgCallsClient } from '../src/index.js';
+import { GramjsAdapter, MtcuteAdapter, TgCallsClient, loadTl, resetTlCache } from '../src/index.js';
 import type { MTProtoLike } from '../src/index.js';
 
 /**
@@ -37,6 +37,7 @@ const Api = {
       CreateGroupCall: class CreateGroupCall extends Fake {},
     },
   ),
+  UpdateGroupCallConnection: class UpdateGroupCallConnection extends Fake {},
   InputGroupCall: class InputGroupCall extends Fake {},
   DataJSON: class DataJSON extends Fake {},
   InputPeerSelf: class InputPeerSelf extends Fake {},
@@ -60,6 +61,126 @@ const CONNECTION_PARAMS = JSON.stringify({
     'rtp-hdrexts': [{ id: 2, uri: 'urn:ietf:params:rtp-hdrext:toffset' }],
   },
 });
+
+function testExplicitTlNamespacesStayLocal(): void {
+  const gramjsApi = { client: 'gramjs' };
+  const teleprotoApi = { client: 'teleproto' };
+  resetTlCache();
+  assert.equal(loadTl(gramjsApi), gramjsApi);
+  assert.equal(loadTl(teleprotoApi), teleprotoApi);
+  resetTlCache();
+}
+
+function testGramjsHandlerRemovalUsesSameBuilder(): void {
+  let addedCallback: ((update: unknown) => void) | null = null;
+  let addedBuilder: unknown;
+  let removedCallback: unknown;
+  let removedBuilder: unknown;
+  let deliveredUpdate: unknown;
+  let deliveredParams: string | null = null;
+  const client: MTProtoLike = {
+    async invoke() {return {};},
+    addEventHandler(callback, builder) {
+      addedCallback = callback;
+      addedBuilder = builder;
+    },
+    removeEventHandler(callback, builder) {
+      removedCallback = callback;
+      removedBuilder = builder;
+    },
+  };
+  const adapter = new GramjsAdapter(client, { Api });
+  const uninstall = adapter.installUpdateHandler(
+    (update) => {deliveredUpdate = update;},
+    (params) => {deliveredParams = params;},
+  );
+  const rawUpdate = { _: 'updateGroupCallConnection', params: { data: 'gramjs-params' } };
+  (addedCallback as unknown as (update: unknown) => void)({ update: rawUpdate });
+  assert.equal(deliveredUpdate, rawUpdate, 'GramJS-family update wrappers are unwrapped');
+  assert.equal(deliveredParams, 'gramjs-params', 'snake-case raw TL updates are recognized');
+  uninstall();
+  assert.equal(removedCallback, addedCallback);
+  assert.equal(removedBuilder, addedBuilder, 'GramJS/teleproto removal receives the registered builder');
+}
+
+function testMtcuteSubscriptionCleanup(): void {
+  let unsubscribeCount = 0;
+  let rawHandler: ((update: unknown) => void) | null = null;
+  let deliveredUpdate: unknown;
+  let deliveredParams: string | null = null;
+  const adapter = new MtcuteAdapter({
+    async call() {return {};},
+    onRawUpdate: {
+      add(handler) {
+        rawHandler = handler;
+        return () => {
+          unsubscribeCount++;
+          rawHandler = null;
+        };
+      },
+    },
+  });
+  const uninstall = adapter.installUpdateHandler(
+    (update) => {deliveredUpdate = update;},
+    (params) => {deliveredParams = params;},
+  );
+  const rawUpdate = { _: 'updateGroupCallConnection', params: { data: 'mtcute-params' } };
+  (rawHandler as unknown as (update: unknown) => void)({ update: rawUpdate, peers: new Map() });
+  assert.equal(deliveredUpdate, rawUpdate, 'mtcute RawUpdateInfo is unwrapped');
+  assert.equal(deliveredParams, 'mtcute-params');
+  uninstall();
+  adapter.dispose();
+  assert.equal(unsubscribeCount, 1, 'mtcute subscription cleanup is idempotent');
+}
+
+async function testRtmpCreateOption(): Promise<void> {
+  let created = false;
+  calls.length = 0;
+  const createClient: MTProtoLike = {
+    async invoke(request: unknown) {
+      const req = request as { className: string };
+      if (req.className === 'GetFullChannel') {
+        return created
+          ? { fullChat: { call: { id: '987654321', accessHash: '1122334455' } } }
+          : { fullChat: {} };
+      }
+      if (req.className === 'CreateGroupCall') {
+        created = true;
+      }
+      return {};
+    },
+  };
+
+  const adapter = new GramjsAdapter(createClient, { Api });
+  await adapter.getGroupCall(-1001234567890n, true, true);
+  const create = calls.find((call) => call.name === 'CreateGroupCall');
+  assert.ok(create, 'CreateGroupCall invoked');
+  assert.equal(create.args.rtmpStream, true, 'GramJS idle call creation requests RTMP-stream mode');
+
+  let mtcuteCreated = false;
+  const mtcuteRequests: Array<{ _: string; [key: string]: unknown }> = [];
+  const mtcuteClient = {
+    async call(request: unknown) {
+      const req = request as { _: string; [key: string]: unknown };
+      mtcuteRequests.push(req);
+      if (req._ === 'channels.getFullChannel') {
+        return mtcuteCreated
+          ? { fullChat: { call: { id: 987654321n, accessHash: 1122334455n } } }
+          : { fullChat: {} };
+      }
+      if (req._ === 'phone.createGroupCall') {
+        mtcuteCreated = true;
+      }
+      return {};
+    },
+    onRawUpdate: { add() {} },
+  };
+  const mtcuteAdapter = new MtcuteAdapter(mtcuteClient);
+  await mtcuteAdapter.getGroupCall(-1001234567890n, true, true);
+  const mtcuteCreate = mtcuteRequests.find((request) => request._ === 'phone.createGroupCall');
+  assert.ok(mtcuteCreate, 'mtcute phone.createGroupCall invoked');
+  assert.equal(mtcuteCreate.rtmpStream, true, 'mtcute idle call creation requests RTMP-stream mode');
+}
 
 let updateHandler: ((u: unknown) => void) | null = null;
 const client: MTProtoLike = {
@@ -88,6 +209,11 @@ const client: MTProtoLike = {
 };
 
 async function main(): Promise<void> {
+  testExplicitTlNamespacesStayLocal();
+  testGramjsHandlerRemovalUsesSameBuilder();
+  testMtcuteSubscriptionCleanup();
+  await testRtmpCreateOption();
+
   // Build the video fixture FIRST: forking (spawnSync) after ntgcalls' native
   // threads exist can deadlock, so no child process is spawned once tests start.
   const ff = spawnSync('ffmpeg', [
@@ -102,8 +228,12 @@ async function main(): Promise<void> {
   // --- join (file source)
   const res = await tg.join(-1001234567890, { kind: 'file', path: '/tmp/test.mp3' });
   assert.equal(res.chatId, -1001234567890n);
-  void res;
   assert.equal(tg.isActive(-1001234567890), true);
+
+  client.getEntity = async () => ({ id: 1234567890, className: 'Channel' });
+  assert.equal(await tg.resolveChatId('@mychannel'), -1001234567890n);
+  assert.equal(tg.isActive('https://t.me/mychannel'), true, 'resolved aliases work with sync introspection');
+  assert.equal(tg.getCall('@mychannel')?.chatId, -1001234567890n);
 
   // TL request sanity
   const join = calls.find((c) => c.name === 'JoinGroupCall');
@@ -122,12 +252,12 @@ async function main(): Promise<void> {
   );
 
   // --- controls
-  assert.equal(await tg.pause(-1001234567890), true);
-  assert.equal(await tg.resume(-1001234567890), true);
-  assert.equal(await tg.mute(-1001234567890), true);
-  assert.equal(tg.getCall(-1001234567890)?.muted, true);
-  assert.equal(await tg.unmute(-1001234567890), true);
-  assert.equal(tg.getCall(-1001234567890)?.muted, false);
+  assert.equal(await tg.pause('@mychannel'), true);
+  assert.equal(await tg.resume('https://t.me/mychannel'), true);
+  assert.equal(await tg.mute('@mychannel'), true);
+  assert.equal(tg.getCall('https://t.me/mychannel')?.muted, true);
+  assert.equal(await tg.unmute('https://t.me/mychannel'), true);
+  assert.equal(tg.getCall('@mychannel')?.muted, false);
   assert.equal(typeof await tg.time(-1001234567890), 'number');
 
   // --- setSource swaps without rejoin
@@ -135,8 +265,8 @@ async function main(): Promise<void> {
   assert.equal(tg.getCall(-1001234567890)?.source.kind, 'url');
 
   // --- leave
-  await tg.leave(-1001234567890);
-  assert.equal(tg.isActive(-1001234567890), false);
+  await tg.leave('https://t.me/mychannel');
+  assert.equal(tg.isActive('@mychannel'), false);
   const leave = calls.find((c) => c.name === 'LeaveGroupCall');
   assert.ok(leave, 'LeaveGroupCall invoked');
   assert.equal(leave!.args.source, joinSsrc, 'leave uses join ssrc');
@@ -167,7 +297,14 @@ async function main(): Promise<void> {
   );
   releaseFullChannel();
   await firstJoin;
-  await tgRace.leave(-1001234567890);
+  const leaveCountBeforeDispose = calls.filter((call) => call.name === 'LeaveGroupCall').length;
+  await tgRace.dispose();
+  assert.equal(tgRace.isActive(-1001234567890), false, 'dispose forgets active calls');
+  assert.equal(
+    calls.filter((call) => call.name === 'LeaveGroupCall').length,
+    leaveCountBeforeDispose + 1,
+    'dispose sends LeaveGroupCall for active calls',
+  );
 
   // --- connection params via update handler path
   calls.length = 0;
@@ -184,8 +321,7 @@ async function main(): Promise<void> {
     }
     return {};
   };
-  const res2 = await tg2.join(-1001234567890, { kind: 'file', path: '/tmp/test.mp3' });
-  void res2;
+  await tg2.join(-1001234567890, { kind: 'file', path: '/tmp/test.mp3' });
   await tg2.leave(-1001234567890);
 
   // --- no-voice-chat error

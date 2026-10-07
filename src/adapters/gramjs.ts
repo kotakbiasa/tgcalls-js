@@ -10,6 +10,7 @@ export class GramjsAdapter implements MTProtoAdapter {
   private readonly client: MTProtoLike;
   private readonly Api: AnyApi;
   private updateCb: ((update: unknown) => void) | null = null;
+  private updateBuilder: unknown | null = null;
 
   constructor(client: MTProtoLike, opts?: { Api?: unknown }) {
     this.client = client;
@@ -38,7 +39,7 @@ export class GramjsAdapter implements MTProtoAdapter {
     );
   }
 
-  async getGroupCall(chatId: bigint, allowCreate: boolean): Promise<unknown> {
+  async getGroupCall(chatId: bigint, allowCreate: boolean, rtmpStream = false): Promise<unknown> {
     let peer: unknown = chatId;
     let channelInput: unknown = chatId;
     let isBasicChat = false;
@@ -105,7 +106,7 @@ export class GramjsAdapter implements MTProtoAdapter {
         peer,
         randomId: Math.floor(Math.random() * 2 ** 31),
         title: 'Voice Chat',
-        rtmpStream: false,
+        rtmpStream,
       }));
       await sleep(1000);
       const call2 = await fetchCall().catch(() => undefined);
@@ -163,16 +164,20 @@ export class GramjsAdapter implements MTProtoAdapter {
     if (this.client.addEventHandler === undefined) {
       return () => {};
     }
+    if (this.updateCb !== null) {
+      return () => this.removeUpdateHandler();
+    }
 
     const handler = (update: unknown) => {
-      const u = update as { className?: string; params?: { data?: string } };
-      onUpdate(u);
-      if (u.className === 'UpdateGroupCallConnection' && typeof u.params?.data === 'string') {
-        onConnectionParams(u.params.data);
+      const wrapped = update as { update?: unknown } | undefined;
+      const payload = wrapped?.update ?? update;
+      onUpdate(payload);
+      const params = findConnectionParams(payload);
+      if (params !== null) {
+        onConnectionParams(params);
       }
     };
 
-    this.updateCb = handler;
     const events = loadEvents();
     const builder = events?.Raw
       ? new events.Raw({ types: [this.Api.UpdateGroupCallConnection] })
@@ -184,19 +189,20 @@ export class GramjsAdapter implements MTProtoAdapter {
         };
 
     this.client.addEventHandler(handler, builder);
+    this.updateCb = handler;
+    this.updateBuilder = builder;
 
-    return () => {
-      if (this.updateCb !== null && this.client.removeEventHandler !== undefined) {
-        this.client.removeEventHandler(this.updateCb, {});
-        this.updateCb = null;
-      }
-    };
+    return () => this.removeUpdateHandler();
+  }
+
+  private removeUpdateHandler(): void {
+    if (this.updateCb === null || this.client.removeEventHandler === undefined) {return;}
+    this.client.removeEventHandler(this.updateCb, this.updateBuilder ?? {});
+    this.updateCb = null;
+    this.updateBuilder = null;
   }
 
   dispose(): void {
-    if (this.updateCb !== null && this.client.removeEventHandler !== undefined) {
-      this.client.removeEventHandler(this.updateCb, {});
-      this.updateCb = null;
-    }
+    this.removeUpdateHandler();
   }
 }

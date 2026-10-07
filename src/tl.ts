@@ -3,7 +3,8 @@
  *
  * tgcalls-js works with any GramJS-family client. Different packages expose
  * the generated raw API at different paths, so we probe them in order and
- * cache the first hit. Resolved once per process.
+ * cache the auto-detected namespace once per process. Caller-provided Api
+ * namespaces remain instance-local so multiple GramJS-family clients can coexist.
  */
 
 import { createRequire } from 'module';
@@ -28,15 +29,15 @@ function tryImport(name: string): AnyApi | null {
 }
 
 /**
- * Resolve the raw TL API namespace. Probes: caller-provided Api, then the
- * `telegram` package (GramJS), then `teleproto`.
+ * Resolve the raw TL API namespace. A caller-provided namespace is returned
+ * directly and never stored globally. Otherwise probes `telegram` (GramJS),
+ * then `teleproto`, and caches the first installed package for auto-detection.
  */
 export function loadTl(provided?: unknown): AnyApi {
-  if (cached) {return cached;}
   if (provided && typeof provided === 'object') {
-    cached = provided as AnyApi;
-    return cached;
+    return provided as AnyApi;
   }
+  if (cached) {return cached;}
   for (const name of ['telegram', 'teleproto']) {
     const api = tryImport(name);
     if (api) {
