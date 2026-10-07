@@ -6,6 +6,7 @@ export class MtcuteAdapter implements MTProtoAdapter {
   readonly isAdapter = true as const;
   private readonly client: MtcuteLike;
   private updateCb: ((update: unknown) => void) | null = null;
+  private updateUnsubscribe: (() => void) | null = null;
 
   constructor(client: MtcuteLike) {
     this.client = client;
@@ -62,7 +63,7 @@ export class MtcuteAdapter implements MTProtoAdapter {
     );
   }
 
-  async getGroupCall(chatId: bigint, allowCreate: boolean): Promise<unknown> {
+  async getGroupCall(chatId: bigint, allowCreate: boolean, rtmpStream = false): Promise<unknown> {
     let peer: any;
     let channelInput: any;
     let isBasicChat = false;
@@ -161,7 +162,7 @@ export class MtcuteAdapter implements MTProtoAdapter {
         peer: createPeer,
         randomId: Math.floor(Math.random() * 2 ** 31),
         title: 'Voice Chat',
-        rtmpStream: false,
+        rtmpStream,
       });
       await sleep(1000);
       const call2 = await fetchCall().catch(() => undefined);
@@ -227,6 +228,10 @@ export class MtcuteAdapter implements MTProtoAdapter {
     onUpdate: (update: unknown) => void,
     onConnectionParams: (params: string) => void,
   ): () => void {
+    if (this.updateCb !== null) {
+      return () => this.removeUpdateHandler();
+    }
+
     const handler = (updateContainer: unknown) => {
       const container = updateContainer as { update?: Record<string, unknown> } | Record<string, unknown> | undefined;
       const u = (container?.update ?? container) as Record<string, unknown> | undefined;
@@ -240,25 +245,27 @@ export class MtcuteAdapter implements MTProtoAdapter {
       }
     };
 
+    const subscription = this.client.onRawUpdate.add(handler);
     this.updateCb = handler;
-    this.client.onRawUpdate.add(handler);
+    this.updateUnsubscribe = typeof subscription === 'function'
+      ? subscription as () => void
+      : null;
 
-    return () => {
-      if (this.updateCb !== null) {
-        if (typeof this.client.onRawUpdate.remove === 'function') {
-          this.client.onRawUpdate.remove(this.updateCb);
-        }
-        this.updateCb = null;
-      }
-    };
+    return () => this.removeUpdateHandler();
+  }
+
+  private removeUpdateHandler(): void {
+    if (this.updateCb === null) {return;}
+    if (this.updateUnsubscribe !== null) {
+      this.updateUnsubscribe();
+    } else if (typeof this.client.onRawUpdate.remove === 'function') {
+      this.client.onRawUpdate.remove(this.updateCb);
+    }
+    this.updateCb = null;
+    this.updateUnsubscribe = null;
   }
 
   dispose(): void {
-    if (this.updateCb !== null) {
-      if (typeof this.client.onRawUpdate.remove === 'function') {
-        this.client.onRawUpdate.remove(this.updateCb);
-      }
-      this.updateCb = null;
-    }
+    this.removeUpdateHandler();
   }
 }
