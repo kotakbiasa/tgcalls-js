@@ -73,6 +73,8 @@ export class TgCallsClient {
   private readonly videoState = new Map<bigint, { device: 'camera' | 'screen'; target: VideoOptions }>();
   /** Per-chat native stream types that already ended (audio/video aware streamEnd). */
   private readonly ended = new Map<bigint, Set<StreamType>>();
+  /** In-flight leave operations, including cleanup after native disconnection. */
+  private readonly pendingLeave = new Map<bigint, Promise<void>>();
 
   constructor(opts: TgCallsOptions) {
     this.opts = opts;
@@ -333,23 +335,45 @@ export class TgCallsClient {
    */
   async leave(chatId: ChatRef): Promise<void> {
     const id = await this.resolveChatId(chatId);
+    await this.leaveResolved(id);
+  }
+
+  /** Stop local media and leave MTProto using the call metadata captured before cleanup. */
+  private leaveResolved(id: bigint): Promise<void> {
+    const pending = this.pendingLeave.get(id);
+    if (pending !== undefined) {return pending;}
+
     const active = this.calls.get(id);
     this.calls.delete(id);
     this.videoState.delete(id);
     this.ended.delete(id);
-    try {
-      await this.ntg.stop(id);
-    } catch { /* already stopped */ }
-    if (active?.presentationActive) {
+
+    let finish!: () => void;
+    const cleanup = new Promise<void>((resolve) => { finish = resolve; });
+    this.pendingLeave.set(id, cleanup);
+    void (async () => {
       try {
-        await this.adapter.leavePresentationCall(active.call);
-      } catch { /* presentation may already be gone */ }
-    }
-    if (active) {
-      try {
-        await this.adapter.leaveGroupCall(active.call, active.ssrc);
-      } catch { /* call may already be gone */ }
-    }
+        try {
+          await this.ntg.stop(id);
+        } catch { /* already stopped */ }
+        if (active?.presentationActive) {
+          try {
+            await this.adapter.leavePresentationCall(active.call);
+          } catch { /* presentation may already be gone */ }
+        }
+        if (active) {
+          try {
+            await this.adapter.leaveGroupCall(active.call, active.ssrc);
+          } catch { /* call may already be gone */ }
+        }
+      } finally {
+        if (this.pendingLeave.get(id) === cleanup) {
+          this.pendingLeave.delete(id);
+        }
+        finish();
+      }
+    })();
+    return cleanup;
   }
 
   async pause(chatId: ChatRef): Promise<boolean> {
@@ -508,13 +532,21 @@ export class TgCallsClient {
     });
 
     this.ntg.onConnectionChange((chatId: bigint, info: { state: ConnectionState }) => {
-      if (info.state === ConnectionState.CLOSED || info.state === ConnectionState.FAILED) {
-        this.calls.delete(chatId);
-        this.videoState.delete(chatId);
-        this.ended.delete(chatId);
-      }
-      fireAndForget(() => this.eventHandlers.connectionChange?.(chatId, info.state));
+      void this.handleNativeConnectionChange(chatId, info);
     });
+  }
+
+  private async handleNativeConnectionChange(
+    chatId: bigint,
+    info: { state: ConnectionState },
+  ): Promise<void> {
+    if (info.state === ConnectionState.CLOSED || info.state === ConnectionState.FAILED) {
+      // Do not discard ActiveCall first: its call reference and SSRC are needed
+      // for phone.leaveGroupCall. Notify listeners only after remote cleanup so
+      // callers can safely destroy the MTProto client from the event callback.
+      await this.leaveResolved(chatId);
+    }
+    fireAndForget(() => this.eventHandlers.connectionChange?.(chatId, info.state));
   }
 
   /** Resolve any chat ref to a marked id (-100... for channels/supergroups). */
@@ -610,6 +642,7 @@ export class TgCallsClient {
   /** Stop active calls and remove update handlers before disposing the MTProto client. */
   async dispose(): Promise<void> {
     await Promise.all([...this.calls.keys()].map((chatId) => this.leave(chatId)));
+    await Promise.all([...this.pendingLeave.values()]);
     if (this.updateUninstall !== null) {
       this.updateUninstall();
       this.updateUninstall = null;

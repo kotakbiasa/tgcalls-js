@@ -1,5 +1,6 @@
 import { strict as assert } from 'assert';
 import { spawnSync } from 'child_process';
+import { ConnectionState } from 'ntgcalls';
 import { GramjsAdapter, MtcuteAdapter, TgCallsClient, loadTl, resetTlCache } from '../src/index.js';
 import type { MTProtoLike } from '../src/index.js';
 
@@ -315,6 +316,27 @@ async function main(): Promise<void> {
   assert.ok(leave, 'LeaveGroupCall invoked');
   assert.equal(leave!.args.source, joinSsrc, 'leave uses join ssrc');
 
+  // A native connection failure must preserve call metadata long enough to
+  // leave the participant through MTProto instead of just forgetting it.
+  let failedStateNotified = false;
+  const tgFailed = new TgCallsClient({ client, Api });
+  tgFailed.on('connectionChange', (_chatId, state) => {
+    if (state === ConnectionState.FAILED) {failedStateNotified = true;}
+  });
+  await tgFailed.join(-1001234567890, { kind: 'file', path: '/tmp/test.mp3' });
+  const leaveCountBeforeFailure = calls.filter((call) => call.name === 'LeaveGroupCall').length;
+  await (tgFailed as unknown as {
+    handleNativeConnectionChange: (chatId: bigint, info: { state: ConnectionState }) => Promise<void>;
+  }).handleNativeConnectionChange(-1001234567890n, { state: ConnectionState.FAILED });
+  assert.equal(tgFailed.isActive(-1001234567890), false, 'failed native call is removed after cleanup');
+  assert.equal(failedStateNotified, true, 'FAILED is reported after cleanup completes');
+  assert.equal(
+    calls.filter((call) => call.name === 'LeaveGroupCall').length,
+    leaveCountBeforeFailure + 1,
+    'FAILED state sends LeaveGroupCall with retained call metadata',
+  );
+  await tgFailed.dispose();
+
   // --- concurrent joins to the same chat: only the first request may proceed
   let releaseFullChannel!: () => void;
   let signalFullChannelStarted!: () => void;
@@ -570,8 +592,17 @@ async function main(): Promise<void> {
   assert.equal(mtcuteRes2.chatId, -1001234567890n);
   await tgMtcute2.leave(-1001234567890);
 
+  // Stop all native instances before the runner exits. Forced process.exit()
+  // while WebRTC worker threads are alive can segfault after the assertions pass.
+  await Promise.all([
+    tg.dispose(), tgRace.dispose(), tg2.dispose(), tg3.dispose(),
+    tg5.dispose(), tgIdleFail.dispose(), tgFailed.dispose(), tgMtcute.dispose(), tgMtcute2.dispose(),
+  ]);
   console.log('ALL TESTS PASSED');
-  process.exit(0); // native WebRTC threads keep the loop alive otherwise
+  // ntgcalls retains native worker handles after stop(); let queued callbacks
+  // drain before exiting, otherwise process.exit can race a WebRTC thread.
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  process.exit(0);
 }
 
 main().catch((err) => {
