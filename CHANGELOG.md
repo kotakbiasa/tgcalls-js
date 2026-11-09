@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 (2026-11-10)
 
 - Feat: Add support for mtcute (`@mtcute/node`, `@mtcute/core`) via modular `MTProtoAdapter` and automatic client detection.
 - Feat: Export `MtcuteAdapter`, `GramjsAdapter`, `createAdapter`, `isMtcuteClient`, and `isGramjsClient`.
