@@ -1,6 +1,6 @@
 {
   "name": "tgcalls-js",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "pytgcalls-style Telegram group call wrapper for Node.js (GramJS/teleproto/mtcute + ntgcalls). Stream audio into Telegram voice chats.",
   "type": "module",
   "main": "dist/index.js",
@@ -23,10 +23,11 @@
   },
   "scripts": {
     "build": "tsc",
+    "typecheck:all": "tsc -p tsconfig.all.json",
     "test": "tsx test/run.ts",
     "smoke": "node smoke.mjs",
     "prepare": "npm run build",
-    "prepublishOnly": "npm run build && npm run smoke"
+    "prepublishOnly": "npm run build && npm run typecheck:all && npm run smoke"
   },
   "repository": {
     "type": "git",
@@ -52,7 +53,7 @@
   "author": "kotakbiasa",
   "license": "MIT",
   "dependencies": {
-    "ntgcalls": "3.0.1"
+    "ntgcalls": "3.0.6"
   },
   "peerDependencies": {
     "big-integer": ">=1.6"
@@ -63,7 +64,9 @@
     }
   },
   "devDependencies": {
+    "@mtcute/node": "^0.32.8",
     "@types/node": "^26.5.0",
+    "telegram": "^2.26.22",
     "tsx": "^4.23.13",
     "typescript": "^5.9.3"
   }
