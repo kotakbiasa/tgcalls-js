@@ -5,7 +5,7 @@ Telegram voice chats using GramJS-family clients (`telegram`, `teleproto`) or
 `mtcute` (`@mtcute/node`, `@mtcute/core`) on top of the official [`ntgcalls`](https://www.npmjs.com/package/ntgcalls)
 native binding (C++ WebRTC core by the pytgcalls team, prebuilt binaries, no compiling).
 
-Status: v0.3.0 — audio + video + screen share (presentation) + mtcute support. Tested with teleproto 1.229 and mtcute 0.32 on Node 20+.
+Status: v0.3.1 — audio + video + screen share (presentation) + mtcute support. Tested with teleproto 1.233 and mtcute 0.32 on Node 20+.
 
 ## Install
 
@@ -16,15 +16,37 @@ npm install github:kotakbiasa/tgcalls-js
 
 `ntgcalls` ships prebuilt native binaries for Linux x64/arm64, macOS arm64 and
 Windows x64 — no compiler needed. You also need `ffmpeg` on PATH (and
-`yt-dlp` only if you use `joinYouTube`).
+`yt-dlp` only if you use joinYouTube).
+
+## Troubleshooting the native binary
+
+`Error: ntgcalls: no prebuilt binary for linux-x64` — some npm versions (seen
+with npm 12 installing from a git URL) skip `ntgcalls`' platform-specific
+optional dependency. Install it yourself:
+
+```bash
+npm install @ntgcalls/linux-x64@3.0.6 --no-save   # match the ntgcalls version
+```
+
+Use `linux-arm64` / `darwin-arm64` / `win32-x64` on other platforms. Installing
+tgcalls-js from the npm registry (once published) resolves optional dependencies
+normally and avoids this entirely.
+
+**ffmpeg must be on PATH before you run anything** — ntgcalls spawns it per
+source, and without it the native core fails with a confusing
+`default_launcher: No such file or directory (vfork_launcher)` error instead of
+"ffmpeg not found" (Debian/Ubuntu: `sudo apt-get install ffmpeg`).
+
 
 ## Quick start
 
 ### GramJS / teleproto
 
 ```js
-import { TelegramClient } from 'telegram';
-import { StringSession } from 'telegram/sessions/index.js';
+// teleproto is the maintained GramJS fork; the archived `telegram` package
+// works identically — just change the two import specifiers back.
+import { TelegramClient } from 'teleproto';
+import { StringSession } from 'teleproto/sessions/index.js';
 import { TgCallsClient } from 'tgcalls-js';
 
 const client = new TelegramClient(new StringSession(SESSION), API_ID, API_HASH, {});

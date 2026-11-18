@@ -2,6 +2,7 @@ import type { MTProtoLike } from '../types.js';
 import type { MTProtoAdapter, MtcuteLike, SupportedClient } from './types.js';
 import { GramjsAdapter } from './gramjs.js';
 import { MtcuteAdapter } from './mtcute.js';
+import { UnrecognizedClientError } from '../errors.js';
 
 export * from './types.js';
 export * from './utils.js';
@@ -42,8 +43,5 @@ export function createAdapter(
   if (isGramjsClient(client)) {
     return new GramjsAdapter(client, opts);
   }
-  throw new Error(
-    'tgcalls-js: unrecognized client. Expected a GramJS/teleproto client (with .invoke), ' +
-    'an mtcute client (with .call and .onRawUpdate), or an MTProtoAdapter instance.',
-  );
+  throw new UnrecognizedClientError();
 }

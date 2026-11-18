@@ -1,5 +1,5 @@
 /**
- * Example: join a voice chat with a local file using a GramJS string session.
+ * Example: join a voice chat with a local file using a teleproto (GramJS fork) client.
  *
  * Usage:
  *   API_ID=… API_HASH=… SESSION='…' CHAT_ID=-100… FILE=./song.mp3 \
@@ -8,8 +8,10 @@
  * (Adapted from ntgcalls/examples/python/file_reader.py.)
  */
 
-import { TelegramClient } from 'telegram';
-import { StringSession } from 'telegram/sessions/index.js';
+// teleproto is the actively maintained GramJS fork (the `telegram` package is
+// archived). Both work with tgcalls-js; this example uses teleproto.
+import { TelegramClient } from 'teleproto';
+import { StringSession } from 'teleproto/sessions/index.js';
 import { TgCallsClient } from '../src/index.js';
 
 const API_ID = Number(process.env.API_ID);

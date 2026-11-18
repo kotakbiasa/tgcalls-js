@@ -268,6 +268,17 @@ async function main(): Promise<void> {
     '-t', '10', '-pix_fmt', 'yuv420p', '/tmp/tgcalls-test.mp4',
   ], { stdio: 'ignore', timeout: 20_000 }); // no pipes + timeout: never hang the suite
 
+  // ntgcalls spawns ffmpeg through a shell for every audio/video source; the
+  // native core surfaces its absence as a confusing vfork_launcher ENOENT.
+  if (ff.error || ff.status !== 0) {
+    console.error(
+      'ffmpeg is required to run this suite (apt-get install ffmpeg / brew install ffmpeg):',
+      ff.error ?? `ffmpeg exited with ${ff.status}`,
+    );
+    process.exit(1);
+  }
+
+
   const tg = new TgCallsClient({ client, Api });
 
   // --- join (file source)

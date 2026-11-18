@@ -26,6 +26,7 @@ import type {
   VideoOptions,
 } from './types.js';
 import { createAdapter, extractSsrc, sleep } from './adapters/index.js';
+import { AlreadyInCallError, NoVoiceChatError } from './errors.js';
 import { audioDescription, videoDescription, resolveYouTube, resolveYouTubeStreams, probeVideo } from './media.js';
 
 export interface TgCallsEvents {
@@ -37,20 +38,20 @@ export interface TgCallsEvents {
   update: (update: unknown) => void | Promise<void>;
 }
 
-/** Run a user event handler without letting a throw/reject crash the process. */
-function fireAndForget(fn: () => unknown): void {
-  try {
-    Promise.resolve(fn()).catch((err: unknown) => {
-      console.error('[tgcalls-js] event handler error:', err);
-    });
-  } catch (err) {
-    console.error('[tgcalls-js] event handler error:', err);
-  }
-}
-
 export class TgCallsClient {
   /** Direct access to the underlying native instance (advanced use). */
   readonly ntg: NTgCalls;
+
+  /** Run a user event handler without letting a throw/reject crash the process. */
+  private fireAndForget(fn: () => unknown): void {
+    try {
+      Promise.resolve(fn()).catch((err: unknown) => {
+        this.opts.logger?.error('[tgcalls-js] event handler error:', err);
+      });
+    } catch (err) {
+      this.opts.logger?.error('[tgcalls-js] event handler error:', err);
+    }
+  }
 
   private readonly adapter: MTProtoAdapter;
   private readonly opts: TgCallsOptions;
@@ -77,7 +78,7 @@ export class TgCallsClient {
   private readonly pendingLeave = new Map<bigint, Promise<void>>();
 
   constructor(opts: TgCallsOptions) {
-    this.opts = opts;
+    this.opts = { logger: { error: console.error.bind(console) }, ...opts };
     this.adapter = createAdapter(opts.client, { Api: opts.Api });
     this.ntg = new NTgCalls();
   }
@@ -116,7 +117,7 @@ export class TgCallsClient {
   async join(chat: ChatRef, source: AudioSource, options: JoinOptions = {}): Promise<JoinResult> {
     const chatId = await this.resolveChatId(chat);
     if (this.calls.has(chatId) || this.joining.has(chatId)) {
-      throw new Error(`Already in a call in chat ${chatId} — leave() first`);
+      throw new AlreadyInCallError(chatId);
     }
     this.joining.add(chatId);
 
@@ -268,7 +269,7 @@ export class TgCallsClient {
   async joinIdle(chat: ChatRef, options: JoinOptions = {}): Promise<JoinResult> {
     const chatId = await this.resolveChatId(chat);
     if (this.calls.has(chatId) || this.joining.has(chatId)) {
-      throw new Error(`Already in a call in chat ${chatId} — leave() first`);
+      throw new AlreadyInCallError(chatId);
     }
     this.joining.add(chatId);
 
@@ -279,7 +280,7 @@ export class TgCallsClient {
       inputCall = await this.adapter.getGroupCall(chatId, false).catch(() => null);
       if (inputCall === null) {
         if (options.allowCreate !== true) {
-          throw new Error('No active voice chat in this chat. Start one first, or pass allowCreate: true.');
+          throw new NoVoiceChatError();
         }
         // RTMP mode keeps idle presence alive on hosts that cannot establish
         // an RTC media path. Existing calls cannot be converted to RTMP.
@@ -524,7 +525,7 @@ export class TgCallsClient {
       if (active?.autoLeave && !claimed) {
         this.leave(chatId).catch(() => { /* best-effort */ });
       }
-      fireAndForget(() => this.eventHandlers.streamEnd?.({
+      this.fireAndForget(() => this.eventHandlers.streamEnd?.({
         chatId,
         source: active?.source ?? null,
         willAutoLeave: active?.autoLeave === true && !claimed,
@@ -546,7 +547,7 @@ export class TgCallsClient {
       // callers can safely destroy the MTProto client from the event callback.
       await this.leaveResolved(chatId);
     }
-    fireAndForget(() => this.eventHandlers.connectionChange?.(chatId, info.state));
+    this.fireAndForget(() => this.eventHandlers.connectionChange?.(chatId, info.state));
   }
 
   /** Resolve any chat ref to a marked id (-100... for channels/supergroups). */
@@ -598,7 +599,7 @@ export class TgCallsClient {
   private installUpdateHandler(): void {
     if (this.updateUninstall !== null) {return;}
     this.updateUninstall = this.adapter.installUpdateHandler(
-      (u) => fireAndForget(() => this.eventHandlers.update?.(u)),
+      (u) => this.fireAndForget(() => this.eventHandlers.update?.(u)),
       (params) => { this.pendingConnectionParams = params; },
     );
   }
@@ -656,6 +657,7 @@ export class TgCallsClient {
 }
 
 export * from './adapters/index.js';
+export * from './errors.js';
 export { loadTl, resetTlCache, loadEvents } from './tl.js';
 export { resolveYouTube, resolveYouTubeStreams, pcmCommand, audioDescription, videoDescription, probeVideo } from './media.js';
 export { VideoQuality } from './types.js';

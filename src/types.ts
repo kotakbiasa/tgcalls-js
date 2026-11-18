@@ -138,6 +138,14 @@ export interface TgCallsOptions {
   ffprobePath?: string;
   /** yt-dlp binary for joinYouTube() (default "yt-dlp"). */
   ytDlpPath?: string;
+  /**
+   * Sink for internal library warnings (e.g. an event handler that threw).
+   * Defaults to console.error; pass { error(){} } for silence, or your own
+   * structured logger (e.g. pino: { error: pinoLogger.error }).
+   */
+  logger?: {
+    error(...args: unknown[]): void;
+  };
 }
 
 export interface StreamEndInfo {

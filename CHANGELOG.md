@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3.1 (2026-11-18)
+
+- Fix: typed errors — new `TgCallsError` base plus `AlreadyInCallError`,
+  `NoVoiceChatError`, `UnrecognizedClientError` (with `chatId` where
+  applicable) replace bare `Error` throws, so consumers can `instanceof`
+  instead of matching message strings. All still extend `Error`.
+- Feat: `logger` option on `TgCallsOptions` — route the library's internal
+  warnings (e.g. a throwing event handler) into your own logger. Defaults to
+  `console.error` (previous behaviour).
+- Fix: test suite now fails fast with a clear message when `ffmpeg` is not on
+  PATH (previously the missing binary surfaced from ntgcalls as a confusing
+  `vfork_launcher` ENOENT crash).
+- Chore: dev dependency `telegram` (archived GramJS) replaced by its maintained
+  fork `teleproto`; examples updated. Runtime support for `telegram` is
+  unchanged.
+- Docs: install troubleshooting for the native binary on npm versions that
+  skip optional dependencies, and the ffmpeg PATH requirement.
+
 ## 0.3.0 (2026-11-10)
 
 - Feat: Add support for mtcute (`@mtcute/node`, `@mtcute/core`) via modular `MTProtoAdapter` and automatic client detection.
