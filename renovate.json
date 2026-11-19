@@ -2,5 +2,15 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "config:recommended"
+  ],
+  "ignoreDeps": [
+    "vitest",
+    "@vitest/coverage-v8",
+    "@vitest/ui",
+    "lint-staged",
+    "@cloudflare/workers-types",
+    "cloudflare/wrangler-action",
+    "pnpm/action-setup",
+    "pnpm"
   ]
 }
