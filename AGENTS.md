@@ -35,7 +35,7 @@ account level — prefer `scripts/ci.sh` for verification.
 
 `npm install` from a git URL on some npm versions (e.g. npm 12) skips the optional
 `@ntgcalls/linux-x64` package → `Error: ntgcalls: no prebuilt binary for linux-x64`.
-Fix: `npm install @ntgcalls/linux-x64@3.0.6 --no-save` (match the `ntgcalls` version).
+Fix: `npm install @ntgcalls/linux-x64@3.0.7 --no-save` (match the `ntgcalls` version).
 
 ## Domain pitfalls (do not regress these)
 

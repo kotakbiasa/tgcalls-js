@@ -157,7 +157,7 @@ used for `phone.leaveGroupCall` comes from the join params produced by
 
 ## Caveats
 
-- `ntgcalls` is pinned to an exact `3.0.x` (currently `3.0.6`); the 3.x line is young and may shift upstream.
+- `ntgcalls` is pinned to an exact `3.0.x` (currently `3.0.7`); the 3.x line is young and may shift upstream.
 - Using `telegram` **and** `teleproto` in one process? Pass the matching `Api` namespace to each `TgCallsClient`. mtcute uses its own TL schema and needs no `Api`.
 - `process.exit()` immediately after using the native lib can abort during WebRTC teardown (cosmetic; long-running bots are unaffected). `await tg.dispose()` first.
 - Presentation requires an RTC connection — unavailable on UDP-blocked hosts in RTMP/STREAM mode.

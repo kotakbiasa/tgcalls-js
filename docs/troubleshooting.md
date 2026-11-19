@@ -4,10 +4,10 @@
 
 Some npm versions (seen with **npm 12 installing from a git URL**) skip `ntgcalls`'
 platform-specific optional dependency. Install it yourself, matching the `ntgcalls`
-version in `package.json` (currently `3.0.6`):
+version in `package.json` (currently `3.0.7`):
 
 ```bash
-npm install @ntgcalls/linux-x64@3.0.6 --no-save
+npm install @ntgcalls/linux-x64@3.0.7 --no-save
 ```
 
 Use the matching package on other platforms:

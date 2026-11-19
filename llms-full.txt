@@ -167,7 +167,7 @@ used for `phone.leaveGroupCall` comes from the join params produced by
 
 ## Caveats
 
-- `ntgcalls` is pinned to an exact `3.0.x` (currently `3.0.6`); the 3.x line is young and may shift upstream.
+- `ntgcalls` is pinned to an exact `3.0.x` (currently `3.0.7`); the 3.x line is young and may shift upstream.
 - Using `telegram` **and** `teleproto` in one process? Pass the matching `Api` namespace to each `TgCallsClient`. mtcute uses its own TL schema and needs no `Api`.
 - `process.exit()` immediately after using the native lib can abort during WebRTC teardown (cosmetic; long-running bots are unaffected). `await tg.dispose()` first.
 - Presentation requires an RTC connection — unavailable on UDP-blocked hosts in RTMP/STREAM mode.
@@ -692,10 +692,10 @@ loadEvents(...): unknown
 
 Some npm versions (seen with **npm 12 installing from a git URL**) skip `ntgcalls`'
 platform-specific optional dependency. Install it yourself, matching the `ntgcalls`
-version in `package.json` (currently `3.0.6`):
+version in `package.json` (currently `3.0.7`):
 
 ```bash
-npm install @ntgcalls/linux-x64@3.0.6 --no-save
+npm install @ntgcalls/linux-x64@3.0.7 --no-save
 ```
 
 Use the matching package on other platforms:
@@ -829,7 +829,7 @@ account level — prefer `scripts/ci.sh` for verification.
 
 `npm install` from a git URL on some npm versions (e.g. npm 12) skips the optional
 `@ntgcalls/linux-x64` package → `Error: ntgcalls: no prebuilt binary for linux-x64`.
-Fix: `npm install @ntgcalls/linux-x64@3.0.6 --no-save` (match the `ntgcalls` version).
+Fix: `npm install @ntgcalls/linux-x64@3.0.7 --no-save` (match the `ntgcalls` version).
 
 ## Domain pitfalls (do not regress these)
 
