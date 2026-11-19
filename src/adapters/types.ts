@@ -26,6 +26,27 @@ export interface MTProtoAdapter {
     onConnectionParams: (params: string) => void,
   ): () => void;
   dispose?(): void;
+
+  // --- P2P (1-on-1) calls. Optional: adapters without these cannot do P2P. ---
+  /** Resolve a user ref to a plain (positive) user id. */
+  resolveUserId?(user: ChatRef): Promise<bigint>;
+  /** messages.getDhConfig → DH params for the call key exchange. */
+  getDhConfig?(): Promise<{ g: number; p: Buffer; random: Buffer }>;
+  /** phone.acceptCall — answer an incoming call with our g_b. */
+  acceptCall?(callId: bigint, accessHash: bigint, gB: Buffer, protocol: unknown): Promise<unknown>;
+  /** phone.requestCall — start an outgoing call. */
+  requestCall?(userId: bigint, gAHash: Buffer, protocol: unknown, video: boolean): Promise<unknown>;
+  /** phone.confirmCall — confirm an outgoing call after the callee accepts. */
+  confirmCall?(callId: bigint, accessHash: bigint, gB: Buffer, keyFingerprint: bigint, protocol: unknown): Promise<unknown>;
+  /** phone.discardCall — hang up / reject. */
+  discardCall?(callId: bigint, accessHash: bigint, duration: number, reason: unknown, connectionId: bigint): Promise<void>;
+  /** phone.sendSignalingData — relay WebRTC signaling to the peer. */
+  sendSignalingData?(callId: bigint, accessHash: bigint, data: Buffer): Promise<void>;
+  /** Subscribe to raw UpdatePhoneCall + UpdatePhoneCallSignalingData. */
+  installCallHandler?(
+    onPhoneCall: (phoneCall: unknown) => void,
+    onSignaling: (phoneCallId: bigint, data: Buffer) => void,
+  ): () => void;
 }
 
 export type SupportedClient = MTProtoLike | MtcuteLike | MTProtoAdapter;

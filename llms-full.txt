@@ -1,6 +1,6 @@
 # tgcalls-js — full documentation (llms-full.txt)
 # Generated concatenation of README + docs for bulk LLM ingestion.
-# Version 0.5.0. Source of truth: the individual files in this repo.
+# Version 0.6.0. Source of truth: the individual files in this repo.
 
 
 
@@ -20,7 +20,7 @@ core by the pytgcalls team — prebuilt binaries, no compiling).
 [![Release](https://img.shields.io/github/v/release/kotakbiasa/tgcalls-js)](https://github.com/kotakbiasa/tgcalls-js/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-> **Status: v0.5.0** — audio + video + presentation + idle presence + playlist/queue + recording + mtcute.
+> **Status: v0.6.0** — audio + video + presentation + idle + playlist/queue + recording + incoming P2P calls + mtcute.
 > Verified end-to-end against live Telegram voice chats (audio, video up to
 > 1080p60, and 40-minute idle presence) on Node 20+.
 
@@ -29,6 +29,7 @@ core by the pytgcalls team — prebuilt binaries, no compiling).
 - 🎵 **Audio** from a file, direct URL, YouTube (via yt-dlp), or a custom shell PCM pipe.
 - 📃 **Playlist/queue** — `play()` / `enqueue()` / `skip()` / `playOnHold()`; tracks auto-advance, hold music loops while the queue is empty.
 - ⏺️ **Recording** — `startRecording()` / `stopRecording()`; records incoming call audio (native mix of all speakers) to wav/mp3/opus via ffmpeg.
+- 📞 **Incoming P2P calls** — `listenCalls()` answers 1-on-1 voice calls and streams audio into them (DH + signaling handled for you).
 - 🎬 **Video** from the same source (`video: {width, height, fps}`), camera or presentation channel.
 - 🖥️ **Screen share** via `startPresentation()` / `stopPresentation()`.
 - 🧍 **Idle presence** via `joinIdle()` — stay in a call with no media (stable on UDP-capable hosts).
@@ -40,7 +41,7 @@ core by the pytgcalls team — prebuilt binaries, no compiling).
 
 ```bash
 # npm publish is pending — install from the git repo (pin a tag for stability):
-npm install github:kotakbiasa/tgcalls-js#v0.5.0
+npm install github:kotakbiasa/tgcalls-js#v0.6.0
 ```
 
 Requirements:
@@ -219,7 +220,7 @@ brew install ffmpeg yt-dlp         # macOS
 ## Install the package
 
 ```bash
-npm install github:kotakbiasa/tgcalls-js#v0.5.0
+npm install github:kotakbiasa/tgcalls-js#v0.6.0
 ```
 
 `ntgcalls` provides prebuilt native binaries (Linux x64/arm64, macOS arm64,
@@ -420,6 +421,24 @@ to the path (container from the extension). Options: `{ sampleRate: 48000, chann
 One recording per chat; starting again replaces it. Leaving the call stops it too.
 After `stopRecording`, give ffmpeg a moment to finalize before reading the file.
 
+## P2P calls (incoming)
+
+Answer incoming 1-on-1 voice calls and stream audio into them (e.g. a voice bot):
+
+```js
+await tg.listenCalls({
+  source: { kind: 'file', path: './song.mp3' },
+  onIncoming: ({ userId }) => { console.log('call from', userId); return true; },
+});
+// ... later
+await tg.stopListeningCalls();
+```
+
+The DH key exchange and WebRTC engine run in ntgcalls; tgcalls-js orchestrates the
+MTProto signaling (`phone.acceptCall`, signaling relay, teardown on hangup).
+Requires a GramJS/teleproto client. `autoAccept` defaults to true; `onIncoming` can
+reject specific callers. Outgoing calls and multi-party conference are follow-up work.
+
 ## Events
 
 | Event | Payload | Notes |
@@ -609,6 +628,22 @@ Requires an active call. One recording per chat; calling `startRecording` again
 replaces it. `stopRecording` closes the native writer, which SIGTERMs ffmpeg so the
 container finalizes cleanly — allow a moment before reading the file. Leaving the
 call also stops any recording.
+
+#### P2P calls (incoming)
+
+```ts
+listenCalls(options: ListenCallsOptions): Promise<void>
+stopListeningCalls(): Promise<void>
+activeCallPeers(): bigint[]
+```
+
+`listenCalls` answers incoming 1-on-1 voice calls and streams `options.source` into
+them. `ListenCallsOptions`: `source` (AudioSource), `autoAccept` (default true),
+`onIncoming({userId, callId}) => boolean` (gate to accept/reject), `ffmpegPath`,
+`logger`. The DH exchange + WebRTC run in ntgcalls; the library handles the MTProto
+signaling. Requires a GramJS/teleproto client. One listener per client; calling
+again replaces it. `stopListeningCalls` hangs up active calls. Outgoing calls and
+multi-party conference are not yet supported.
 
 #### Lifecycle
 
@@ -959,6 +994,21 @@ Version in `package.json` + a `CHANGELOG.md` entry. Tag `vX.Y.Z` and
 ==============================================================================
 
 # Changelog
+
+## 0.6.0 (2026-11-19)
+
+- Feat: **incoming P2P (1-on-1) voice calls** — `listenCalls({ source, autoAccept?, onIncoming? })`,
+  `stopListeningCalls()`, `activeCallPeers()`. Answers incoming Telegram voice calls
+  and streams an audio source into them. The DH key exchange and WebRTC engine run
+  in the ntgcalls native core; the library orchestrates the MTProto signaling
+  (`phone.acceptCall` / `sendSignalingData`, `UpdatePhoneCall` / `UpdatePhoneCallSignalingData`),
+  including signaling queueing before connect and clean teardown on discard.
+- Adapter: new optional P2P methods on `MTProtoAdapter` (getDhConfig/acceptCall/
+  requestCall/confirmCall/discardCall/sendSignalingData/installCallHandler/resolveUserId),
+  implemented for GramJS/teleproto. New `P2PCallManager` + `ListenCallsOptions` exports.
+- Scope: incoming calls only this release; outgoing calls and multi-party conference
+  are follow-up phases. Requires a GramJS/teleproto client (mtcute P2P not yet wired).
+- Docs: P2P section in guide + API reference; `examples/call-gramjs.ts`.
 
 ## 0.5.0 (2026-11-19)
 

@@ -1,0 +1,210 @@
+/**
+ * P2P (1-on-1) call manager — answers incoming Telegram voice calls and streams
+ * an audio source into them. The DH key exchange and WebRTC engine are handled
+ * by the ntgcalls native core; this module orchestrates the MTProto signaling
+ * (phone.acceptCall / sendSignalingData + UpdatePhoneCall / SignalingData).
+ *
+ * Incoming flow (grounded in a proven ntgcalls P2P implementation):
+ *   PhoneCallRequested → createP2pCall → CAPTURE source → getDhConfig →
+ *   initExchange(g_a_hash)→g_b → phone.acceptCall
+ *   PhoneCall (confirmed) → exchangeKeys(g_a_or_b, fingerprint) → connectP2p →
+ *   flush queued signaling → PLAYBACK source → unmute + resume
+ *   Signaling relays both ways; PhoneCallDiscarded tears down.
+ */
+
+import { NTgCalls, StreamMode, MediaSource } from 'ntgcalls';
+import type { MTProtoAdapter } from './adapters/types.js';
+import type { AudioSource, TgCallsOptions } from './types.js';
+import { audioDescription } from './media.js';
+
+export interface ListenCallsOptions {
+  /** Audio streamed into answered calls (file / url / shell). */
+  source: AudioSource;
+  /** Auto-accept incoming calls (default true). If false, onIncoming decides. */
+  autoAccept?: boolean;
+  /** Optional gate: return false to reject an incoming call. */
+  onIncoming?: (info: { userId: bigint; callId: bigint }) => boolean | Promise<boolean>;
+  /** ffmpeg binary override. */
+  ffmpegPath?: string;
+  /** Sink for internal warnings. */
+  logger?: { error(...args: unknown[]): void };
+}
+
+interface P2PSession {
+  callId: bigint;
+  accessHash: bigint;
+  peerId: bigint;
+  p2pStarted: boolean;
+  connInit: boolean;
+  queue: Buffer[];
+  startedAt: number;
+}
+
+type PhoneCallObj = Record<string, any>;
+
+function buildRtcServers(connections: PhoneCallObj[] | undefined): unknown[] {
+  const servers: unknown[] = [];
+  for (const conn of connections ?? []) {
+    try {
+      servers.push({
+        id: BigInt(conn.id),
+        ipv4: conn.ip ?? conn.ipv4 ?? '',
+        ipv6: conn.ipv6 ?? '',
+        port: conn.port,
+        username: conn.username,
+        password: conn.password,
+        turn: conn.turn ?? false,
+        stun: conn.stun ?? false,
+        tcp: conn.tcp ?? false,
+        peerTag: conn.peerTag,
+      });
+    } catch { /* skip malformed endpoint */ }
+  }
+  return servers;
+}
+
+export class P2PCallManager {
+  private readonly sessions = new Map<bigint, P2PSession>(); // callId → session
+  private stopHandler: (() => void) | null = null;
+  private readonly log: { error(...args: unknown[]): void };
+
+  constructor(
+    private readonly ntg: NTgCalls,
+    private readonly adapter: MTProtoAdapter,
+    private readonly opts: ListenCallsOptions,
+  ) {
+    this.log = opts.logger ?? { error: console.error.bind(console) };
+  }
+
+  /** Start listening for incoming P2P calls. */
+  start(): void {
+    const a = this.adapter;
+    if (!a.installCallHandler || !a.getDhConfig || !a.acceptCall || !a.sendSignalingData || !a.discardCall) {
+      throw new Error('This MTProto adapter does not support P2P calls (need a GramJS/teleproto client).');
+    }
+    // Native → Telegram signaling relay (group calls never fire this).
+    this.ntg.onSignalingData((chatId: bigint, data: Buffer) => { void this.relayOut(chatId, data); });
+    this.stopHandler = a.installCallHandler(
+      (pc) => { void this.onPhoneCall(pc as PhoneCallObj); },
+      (callId, data) => { void this.onSignalingIn(callId, data); },
+    );
+  }
+
+  /** Stop listening and tear down any active P2P calls. */
+  async stop(): Promise<void> {
+    this.stopHandler?.();
+    this.stopHandler = null;
+    for (const s of this.sessions.values()) {
+      try { await this.ntg.stop(s.peerId); } catch { /* best-effort */ }
+    }
+    this.sessions.clear();
+  }
+
+  /** Active P2P call peer ids. */
+  activePeers(): bigint[] {
+    return [...this.sessions.values()].map((s) => s.peerId);
+  }
+
+  private findByPeer(peerId: bigint): P2PSession | undefined {
+    for (const s of this.sessions.values()) {if (s.peerId === peerId) {return s;}}
+    return undefined;
+  }
+
+  private async relayOut(peerId: bigint, data: Buffer): Promise<void> {
+    const s = this.findByPeer(peerId);
+    if (!s) {return;}
+    try { await this.adapter.sendSignalingData!(s.callId, s.accessHash, data); }
+    catch (e) { this.log.error('[tgcalls-js] signaling relay error:', e); }
+  }
+
+  private async onSignalingIn(callId: bigint, data: Buffer): Promise<void> {
+    const s = this.sessions.get(callId);
+    if (!s) {return;}
+    if (!s.connInit) { s.queue.push(data); return; }
+    try { await this.ntg.sendSignalingData(s.peerId, data); }
+    catch (e) { this.log.error('[tgcalls-js] sendSignalingData error:', e); }
+  }
+
+  private async onPhoneCall(pc: PhoneCallObj): Promise<void> {
+    const kind = pc?.className;
+    try {
+      if (kind === 'PhoneCallRequested') {await this.acceptIncoming(pc);}
+      else if (kind === 'PhoneCall') {await this.connectP2p(pc);}
+      else if (kind === 'PhoneCallDiscarded') {await this.onDiscarded(pc);}
+      // PhoneCallAccepted / PhoneCallWaiting belong to the outgoing flow (later phase).
+    } catch (e) {
+      this.log.error('[tgcalls-js] call handling error:', e);
+    }
+  }
+
+  private async acceptIncoming(pc: PhoneCallObj): Promise<void> {
+    const callId = BigInt(pc.id);
+    const accessHash = BigInt(pc.accessHash);
+    const peerId = BigInt(pc.adminId);
+    if (this.sessions.has(callId)) {return;}
+
+    const accept = this.opts.autoAccept !== false;
+    let allowed = accept;
+    if (this.opts.onIncoming) {
+      allowed = await this.opts.onIncoming({ userId: peerId, callId });
+    }
+    if (!allowed) {
+      await this.adapter.discardCall!(callId, accessHash, 0, undefined, 0n);
+      return;
+    }
+
+    const session: P2PSession = { callId, accessHash, peerId, p2pStarted: false, connInit: false, queue: [], startedAt: Date.now() };
+    this.sessions.set(callId, session);
+
+    // createP2pCall MUST precede initExchange; the native call id is the peer id.
+    await this.ntg.createP2pCall(peerId);
+    const mediaOpts = { client: {} as never, ffmpegPath: this.opts.ffmpegPath } as TgCallsOptions;
+    await this.ntg.setStreamSources(peerId, StreamMode.CAPTURE, {
+      microphone: audioDescription(this.opts.source, mediaOpts),
+    });
+
+    const dh = await this.adapter.getDhConfig!();
+    const gB = await this.ntg.initExchange(peerId, { g: dh.g, p: dh.p, random: dh.random }, Buffer.from(pc.gAHash));
+    const protocol = NTgCalls.getProtocol();
+    await this.adapter.acceptCall!(callId, accessHash, gB, protocol);
+  }
+
+  private async connectP2p(pc: PhoneCallObj): Promise<void> {
+    const callId = BigInt(pc.id);
+    const s = this.sessions.get(callId);
+    if (!s || s.p2pStarted) {return;} // Telegram re-sends PhoneCall; connect exactly once.
+    s.p2pStarted = true;
+    s.accessHash = BigInt(pc.accessHash);
+
+    await this.ntg.exchangeKeys(s.peerId, Buffer.from(pc.gAOrB), BigInt(pc.keyFingerprint));
+    const servers = buildRtcServers(pc.connections);
+    const protocol = NTgCalls.getProtocol();
+    await this.ntg.connectP2p(s.peerId, servers as never, protocol.libraryVersions, pc.p2pAllowed ?? true, '');
+
+    s.connInit = true;
+    for (const queued of s.queue) {
+      try { await this.ntg.sendSignalingData(s.peerId, queued); }
+      catch (e) { this.log.error('[tgcalls-js] queued signaling error:', e); }
+    }
+    s.queue = [];
+
+    // PLAYBACK (inbound) after connect so incoming frames flow; then unmute/resume
+    // or the call connects but carries no audio.
+    await this.ntg.setStreamSources(s.peerId, StreamMode.PLAYBACK, {
+      microphone: { mediaSource: MediaSource.EXTERNAL, sampleRate: 48000, channelCount: 1, input: '', keepOpen: false },
+    });
+    await this.ntg.unmute(s.peerId);
+    await this.ntg.resume(s.peerId);
+  }
+
+  private async onDiscarded(pc: PhoneCallObj): Promise<void> {
+    const callId = BigInt(pc.id);
+    const s = this.sessions.get(callId);
+    if (!s) {return;}
+    this.sessions.delete(callId);
+    try { await this.ntg.stop(s.peerId); } catch { /* best-effort */ }
+    const duration = Math.floor((Date.now() - s.startedAt) / 1000);
+    try { await this.adapter.discardCall!(callId, s.accessHash, duration, pc.reason, 0n); }
+    catch { /* peer already gone */ }
+  }
+}

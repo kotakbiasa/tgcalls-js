@@ -11,6 +11,8 @@ export class GramjsAdapter implements MTProtoAdapter {
   private readonly Api: AnyApi;
   private updateCb: ((update: unknown) => void) | null = null;
   private updateBuilder: unknown | null = null;
+  private callCb: ((update: unknown) => void) | null = null;
+  private callBuilder: unknown | null = null;
 
   constructor(client: MTProtoLike, opts?: { Api?: unknown }) {
     this.client = client;
@@ -204,5 +206,107 @@ export class GramjsAdapter implements MTProtoAdapter {
 
   dispose(): void {
     this.removeUpdateHandler();
+    this.removeCallHandler();
+  }
+
+  // --- P2P (1-on-1) calls ---
+
+  async resolveUserId(user: ChatRef): Promise<bigint> {
+    if (typeof user === 'number' || typeof user === 'bigint') {
+      const n = BigInt(user);
+      return n < 0n ? -n : n;
+    }
+    const s = user.trim();
+    if (/^\d+$/.test(s)) {return BigInt(s);}
+    const handle = s.replace(/^https?:\/\/t\.me\//i, '').replace(/^@/, '').replace(/\/+$/, '');
+    if (this.client.getEntity) {
+      const entity = await this.client.getEntity(handle) as { id?: unknown };
+      if (entity?.id !== undefined) {return BigInt(entity.id as never);}
+    }
+    throw new Error(`Cannot resolve user "${user}" — pass a numeric user id or a cached username.`);
+  }
+
+  async getDhConfig(): Promise<{ g: number; p: Buffer; random: Buffer }> {
+    const res = await this.client.invoke(
+      new this.Api.messages.GetDhConfig({ version: 0, randomLength: 256 }),
+    ) as { g: number; p: Buffer; random: Buffer };
+    return { g: res.g, p: Buffer.from(res.p), random: Buffer.from(res.random) };
+  }
+
+  private inputPhoneCall(callId: bigint, accessHash: bigint): unknown {
+    return new this.Api.InputPhoneCall({ id: callId, accessHash });
+  }
+
+  private phoneProtocol(protocol: unknown): unknown {
+    const p = protocol as { minLayer: number; maxLayer: number; udpP2p: boolean; udpReflector: boolean; libraryVersions: string[] };
+    return new this.Api.PhoneCallProtocol({
+      minLayer: p.minLayer, maxLayer: p.maxLayer, udpP2p: p.udpP2p,
+      udpReflector: p.udpReflector, libraryVersions: p.libraryVersions,
+    });
+  }
+
+  async acceptCall(callId: bigint, accessHash: bigint, gB: Buffer, protocol: unknown): Promise<unknown> {
+    return await this.client.invoke(new this.Api.phone.AcceptCall({
+      peer: this.inputPhoneCall(callId, accessHash), gB, protocol: this.phoneProtocol(protocol),
+    }));
+  }
+
+  async requestCall(userId: bigint, gAHash: Buffer, protocol: unknown, video: boolean): Promise<unknown> {
+    const peer = await (this.client as any).getInputEntity(userId);
+    return await this.client.invoke(new this.Api.phone.RequestCall({
+      userId: peer, randomId: Math.floor(Math.random() * 2 ** 31),
+      gAHash, protocol: this.phoneProtocol(protocol), video,
+    }));
+  }
+
+  async confirmCall(callId: bigint, accessHash: bigint, gB: Buffer, keyFingerprint: bigint, protocol: unknown): Promise<unknown> {
+    return await this.client.invoke(new this.Api.phone.ConfirmCall({
+      peer: this.inputPhoneCall(callId, accessHash), gB, keyFingerprint, protocol: this.phoneProtocol(protocol),
+    }));
+  }
+
+  async discardCall(callId: bigint, accessHash: bigint, duration: number, reason: unknown, connectionId: bigint): Promise<void> {
+    await this.client.invoke(new this.Api.phone.DiscardCall({
+      peer: this.inputPhoneCall(callId, accessHash), duration,
+      reason: reason ?? new this.Api.PhoneCallDiscardReasonMissed(), connectionId,
+    }));
+  }
+
+  async sendSignalingData(callId: bigint, accessHash: bigint, data: Buffer): Promise<void> {
+    await this.client.invoke(new this.Api.phone.SendSignalingData({
+      peer: this.inputPhoneCall(callId, accessHash), data,
+    }));
+  }
+
+  installCallHandler(
+    onPhoneCall: (phoneCall: unknown) => void,
+    onSignaling: (phoneCallId: bigint, data: Buffer) => void,
+  ): () => void {
+    if (this.client.addEventHandler === undefined) {return () => {};}
+    if (this.callCb !== null) {return () => this.removeCallHandler();}
+    const handler = (update: unknown) => {
+      const wrapped = update as { update?: unknown } | undefined;
+      const payload = (wrapped?.update ?? update) as Record<string, any>;
+      if (payload?.phoneCall) {
+        onPhoneCall(payload.phoneCall);
+      } else if (payload?.phoneCallId !== undefined && payload?.data !== undefined) {
+        onSignaling(BigInt(payload.phoneCallId), Buffer.from(payload.data));
+      }
+    };
+    const events = loadEvents();
+    const builder = events?.Raw
+      ? new events.Raw({ types: [this.Api.UpdatePhoneCall, this.Api.UpdatePhoneCallSignalingData] })
+      : { resolved: true, async resolve() { /* nothing */ }, build: (e: unknown) => e, filter: (e: unknown) => e };
+    this.client.addEventHandler(handler, builder);
+    this.callCb = handler;
+    this.callBuilder = builder;
+    return () => this.removeCallHandler();
+  }
+
+  private removeCallHandler(): void {
+    if (this.callCb === null || this.client.removeEventHandler === undefined) {return;}
+    this.client.removeEventHandler(this.callCb, this.callBuilder ?? {});
+    this.callCb = null;
+    this.callBuilder = null;
   }
 }

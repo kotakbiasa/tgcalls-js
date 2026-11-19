@@ -126,6 +126,24 @@ to the path (container from the extension). Options: `{ sampleRate: 48000, chann
 One recording per chat; starting again replaces it. Leaving the call stops it too.
 After `stopRecording`, give ffmpeg a moment to finalize before reading the file.
 
+## P2P calls (incoming)
+
+Answer incoming 1-on-1 voice calls and stream audio into them (e.g. a voice bot):
+
+```js
+await tg.listenCalls({
+  source: { kind: 'file', path: './song.mp3' },
+  onIncoming: ({ userId }) => { console.log('call from', userId); return true; },
+});
+// ... later
+await tg.stopListeningCalls();
+```
+
+The DH key exchange and WebRTC engine run in ntgcalls; tgcalls-js orchestrates the
+MTProto signaling (`phone.acceptCall`, signaling relay, teardown on hangup).
+Requires a GramJS/teleproto client. `autoAccept` defaults to true; `onIncoming` can
+reject specific callers. Outgoing calls and multi-party conference are follow-up work.
+
 ## Events
 
 | Event | Payload | Notes |

@@ -117,6 +117,22 @@ replaces it. `stopRecording` closes the native writer, which SIGTERMs ffmpeg so 
 container finalizes cleanly — allow a moment before reading the file. Leaving the
 call also stops any recording.
 
+#### P2P calls (incoming)
+
+```ts
+listenCalls(options: ListenCallsOptions): Promise<void>
+stopListeningCalls(): Promise<void>
+activeCallPeers(): bigint[]
+```
+
+`listenCalls` answers incoming 1-on-1 voice calls and streams `options.source` into
+them. `ListenCallsOptions`: `source` (AudioSource), `autoAccept` (default true),
+`onIncoming({userId, callId}) => boolean` (gate to accept/reject), `ffmpegPath`,
+`logger`. The DH exchange + WebRTC run in ntgcalls; the library handles the MTProto
+signaling. Requires a GramJS/teleproto client. One listener per client; calling
+again replaces it. `stopListeningCalls` hangs up active calls. Outgoing calls and
+multi-party conference are not yet supported.
+
 #### Lifecycle
 
 ```ts

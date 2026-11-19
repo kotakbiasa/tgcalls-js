@@ -3,6 +3,7 @@ import { spawnSync } from 'child_process';
 import { ConnectionState, StreamMode, StreamType } from 'ntgcalls';
 import { GramjsAdapter, MtcuteAdapter, TgCallsClient, loadTl, resetTlCache } from '../src/index.js';
 import { recordingDescription } from '../src/media.js';
+import { P2PCallManager } from '../src/calls.js';
 import type { MTProtoLike } from '../src/index.js';
 
 /**
@@ -748,6 +749,75 @@ async function main(): Promise<void> {
     await tgRec.leave(chat);
     assert.equal(tgRec.isRecording(chat), false, 'leave clears recording state');
     await tgRec.dispose();
+  }
+
+  // --- P2P incoming-call signaling (v0.6.0): fake adapter + fake ntg, no native.
+  {
+    const tick = () => new Promise((r) => setTimeout(r, 25));
+    const log: string[] = [];
+    const fakeNtg: any = {
+      createP2pCall: async (id: bigint) => { log.push(`createP2pCall:${id}`); },
+      setStreamSources: async (_id: bigint, mode: number) => { log.push(`setStream:${mode}`); },
+      initExchange: async () => { log.push('initExchange'); return Buffer.alloc(256, 2); },
+      exchangeKeys: async () => { log.push('exchangeKeys'); return { keyFingerprint: 0n, gAOrB: Buffer.alloc(0) }; },
+      connectP2p: async (_id: bigint, servers: unknown[]) => { log.push(`connectP2p:${servers.length}`); },
+      sendSignalingData: async (_id: bigint, data: Buffer) => { log.push(`ntgSignal:${data.length}`); },
+      unmute: async () => { log.push('unmute'); },
+      resume: async () => { log.push('resume'); },
+      stop: async (id: bigint) => { log.push(`stop:${id}`); },
+      onSignalingData: (cb: any) => { fakeNtg._sigCb = cb; },
+    };
+    let phoneCb: any, sigCb: any;
+    const fakeAdapter: any = {
+      isAdapter: true,
+      getDhConfig: async () => { log.push('getDhConfig'); return { g: 3, p: Buffer.alloc(256, 1), random: Buffer.alloc(256, 1) }; },
+      acceptCall: async (_c: bigint, _a: bigint, gB: Buffer) => { log.push(`acceptCall:${gB.length}`); return {}; },
+      sendSignalingData: async (_c: bigint, _a: bigint, data: Buffer) => { log.push(`adapterSignal:${data.length}`); },
+      discardCall: async (_c: bigint, _a: bigint, dur: number) => { log.push(`discardCall:${dur}`); },
+      installCallHandler: (onPC: any, onSig: any) => { phoneCb = onPC; sigCb = onSig; return () => {}; },
+    };
+    const mgr = new P2PCallManager(fakeNtg, fakeAdapter, { source: { kind: 'file', path: '/tmp/x.mp3' } });
+    mgr.start();
+
+    await phoneCb({ className: 'PhoneCallRequested', id: 111n, accessHash: 222n, adminId: 333n, gAHash: Buffer.alloc(32, 1) });
+    await tick();
+    assert.ok(log.includes('createP2pCall:333'), 'createP2pCall with peer id');
+    assert.ok(log.includes('getDhConfig'), 'getDhConfig fetched');
+    assert.ok(log.includes('initExchange'), 'initExchange ran');
+    assert.ok(log.includes('acceptCall:256'), 'acceptCall sent with g_b');
+
+    await sigCb(111n, Buffer.alloc(10)); // before connect → queued
+    await tick();
+    assert.ok(!log.some((c) => c.startsWith('ntgSignal:')), 'signaling queued before connect');
+
+    await phoneCb({ className: 'PhoneCall', id: 111n, accessHash: 222n, gAOrB: Buffer.alloc(256, 2), keyFingerprint: 999n, p2pAllowed: true, connections: [{ id: 1n, ip: '1.2.3.4', ipv6: '', port: 1234, turn: true, stun: false, tcp: false }] });
+    await tick();
+    assert.ok(log.includes('exchangeKeys'), 'exchangeKeys on confirm');
+    assert.ok(log.includes('connectP2p:1'), 'connectP2p with 1 RTC server');
+    assert.ok(log.includes('unmute') && log.includes('resume'), 'unmute+resume after connect');
+    assert.ok(log.includes('ntgSignal:10'), 'queued signaling flushed after connect');
+    assert.deepEqual(mgr.activePeers(), [333n], 'active peer tracked');
+
+    fakeNtg._sigCb(333n, Buffer.alloc(5)); // native → Telegram relay
+    await tick();
+    assert.ok(log.includes('adapterSignal:5'), 'native signaling relayed to adapter');
+
+    await phoneCb({ className: 'PhoneCallDiscarded', id: 111n, reason: { className: 'PhoneCallDiscardReasonHangup' } });
+    await tick();
+    assert.ok(log.includes('stop:333'), 'native stopped on discard');
+    assert.ok(log.some((c) => c.startsWith('discardCall:')), 'discardCall sent');
+    assert.deepEqual(mgr.activePeers(), [], 'peer removed after discard');
+    await mgr.stop();
+
+    // onIncoming gate rejects → discardCall, no accept.
+    const log2: string[] = [];
+    const adapter2 = { ...fakeAdapter, acceptCall: async () => { log2.push('accept'); }, discardCall: async () => { log2.push('discard'); }, installCallHandler: (onPC: any) => { phoneCb = onPC; return () => {}; } };
+    const mgr2 = new P2PCallManager(fakeNtg, adapter2, { source: { kind: 'file', path: '/tmp/x.mp3' }, onIncoming: () => false });
+    mgr2.start();
+    await phoneCb({ className: 'PhoneCallRequested', id: 444n, accessHash: 555n, adminId: 666n, gAHash: Buffer.alloc(32, 1) });
+    await tick();
+    assert.ok(log2.includes('discard') && !log2.includes('accept'), 'onIncoming=false rejects the call');
+    await mgr2.stop();
   }
 
   // Stop all native instances before the runner exits. Forced process.exit()

@@ -30,6 +30,7 @@ import type {
 import { createAdapter, extractSsrc, sleep } from './adapters/index.js';
 import { AlreadyInCallError, NoVoiceChatError } from './errors.js';
 import { audioDescription, videoDescription, recordingDescription, resolveYouTube, resolveYouTubeStreams, probeVideo } from './media.js';
+import { P2PCallManager, type ListenCallsOptions } from './calls.js';
 
 export interface TgCallsEvents {
   /** Fired when the native audio stream ends (e.g. file finished). */
@@ -86,6 +87,8 @@ export class TgCallsClient {
   private readonly playlists = new Map<bigint, { queue: AudioSource[]; hold: AudioSource | null }>();
   /** Per-chat active recording (incoming audio mixed by ntgcalls → ffmpeg). */
   private readonly recordings = new Map<bigint, RecordingInfo>();
+  /** Active incoming-P2P-call listener, if any. */
+  private callManager: P2PCallManager | null = null;
 
   constructor(opts: TgCallsOptions) {
     this.opts = { logger: { error: console.error.bind(console) }, ...opts };
@@ -621,6 +624,32 @@ export class TgCallsClient {
     return this.getRecording(chat) !== null;
   }
 
+  // ------------------------------------------------------------- P2P calls
+
+  /**
+   * Listen for incoming 1-on-1 voice calls and answer them, streaming `source`.
+   * Requires a GramJS/teleproto client (P2P signaling). One listener per client;
+   * calling again replaces it. Stop with stopListeningCalls().
+   */
+  async listenCalls(options: ListenCallsOptions): Promise<void> {
+    if (this.callManager) {await this.callManager.stop();}
+    const mgr = new P2PCallManager(this.ntg, this.adapter, {
+      logger: this.opts.logger, ffmpegPath: this.opts.ffmpegPath, ...options,
+    });
+    mgr.start();
+    this.callManager = mgr;
+  }
+
+  /** Stop answering incoming P2P calls and hang up any active ones. */
+  async stopListeningCalls(): Promise<void> {
+    if (this.callManager) {await this.callManager.stop(); this.callManager = null;}
+  }
+
+  /** Peer user ids of active incoming P2P calls. */
+  activeCallPeers(): bigint[] {
+    return this.callManager?.activePeers() ?? [];
+  }
+
   /**
    * Start screen/video presentation (screen share channel) for an active call.
    * `source` must be file/url (ffmpeg-readable). RTC connection required —
@@ -837,6 +866,7 @@ export class TgCallsClient {
 
   /** Stop active calls and remove update handlers before disposing the MTProto client. */
   async dispose(): Promise<void> {
+    if (this.callManager) {await this.callManager.stop(); this.callManager = null;}
     await Promise.all([...this.calls.keys()].map((chatId) => this.leave(chatId)));
     await Promise.all([...this.pendingLeave.values()]);
     if (this.updateUninstall !== null) {
@@ -855,6 +885,8 @@ export * from './adapters/index.js';
 export * from './errors.js';
 export { loadTl, resetTlCache, loadEvents } from './tl.js';
 export { resolveYouTube, resolveYouTubeStreams, pcmCommand, audioDescription, videoDescription, probeVideo } from './media.js';
+export { P2PCallManager } from './calls.js';
+export type { ListenCallsOptions } from './calls.js';
 export { VideoQuality } from './types.js';
 export type {
   ActiveCall,

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.6.0 (2026-11-19)
+
+- Feat: **incoming P2P (1-on-1) voice calls** — `listenCalls({ source, autoAccept?, onIncoming? })`,
+  `stopListeningCalls()`, `activeCallPeers()`. Answers incoming Telegram voice calls
+  and streams an audio source into them. The DH key exchange and WebRTC engine run
+  in the ntgcalls native core; the library orchestrates the MTProto signaling
+  (`phone.acceptCall` / `sendSignalingData`, `UpdatePhoneCall` / `UpdatePhoneCallSignalingData`),
+  including signaling queueing before connect and clean teardown on discard.
+- Adapter: new optional P2P methods on `MTProtoAdapter` (getDhConfig/acceptCall/
+  requestCall/confirmCall/discardCall/sendSignalingData/installCallHandler/resolveUserId),
+  implemented for GramJS/teleproto. New `P2PCallManager` + `ListenCallsOptions` exports.
+- Scope: incoming calls only this release; outgoing calls and multi-party conference
+  are follow-up phases. Requires a GramJS/teleproto client (mtcute P2P not yet wired).
+- Docs: P2P section in guide + API reference; `examples/call-gramjs.ts`.
+
 ## 0.5.0 (2026-11-19)
 
 - Feat: call recording — `startRecording(chat, path, opts?)`, `stopRecording(chat)`,
