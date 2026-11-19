@@ -1,7 +1,8 @@
 import { strict as assert } from 'assert';
 import { spawnSync } from 'child_process';
-import { ConnectionState, StreamType } from 'ntgcalls';
+import { ConnectionState, StreamMode, StreamType } from 'ntgcalls';
 import { GramjsAdapter, MtcuteAdapter, TgCallsClient, loadTl, resetTlCache } from '../src/index.js';
+import { recordingDescription } from '../src/media.js';
 import type { MTProtoLike } from '../src/index.js';
 
 /**
@@ -276,6 +277,28 @@ async function main(): Promise<void> {
       ff.error ?? `ffmpeg exited with ${ff.status}`,
     );
     process.exit(1);
+  }
+
+  // Recording encode pipeline (v0.5.0): the exact ffmpeg command the recorder
+  // uses must turn s16le PCM into a valid container. Done here, before any
+  // native thread exists (forking afterwards can deadlock — see above).
+  {
+    const desc = recordingDescription('/tmp/tgcalls-rec-pipe.wav', 48000, 1);
+    const N = 24000; // 0.5s of 440Hz sine, s16le mono 48k
+    const pcm = Buffer.alloc(N * 2);
+    for (let i = 0; i < N; i++) {
+      pcm.writeInt16LE(Math.round(Math.sin(2 * Math.PI * 440 * i / 48000) * 12000), i * 2);
+    }
+    const enc = spawnSync('sh', ['-c', desc.input], { input: pcm, timeout: 20_000 });
+    assert.equal(enc.status, 0, 'recorder ffmpeg command encodes PCM successfully');
+    const probe = spawnSync('ffprobe', [
+      '-v', 'error', '-show_entries', 'stream=codec_name,sample_rate,channels',
+      '-of', 'json', '/tmp/tgcalls-rec-pipe.wav',
+    ], { encoding: 'utf8', timeout: 20_000 });
+    const st = JSON.parse(probe.stdout).streams?.[0];
+    assert.equal(st?.codec_name, 'pcm_s16le', 'recorded wav is pcm_s16le');
+    assert.equal(st?.sample_rate, '48000', 'recorded sample rate is 48000');
+    assert.equal(st?.channels, 1, 'recorded file is mono');
   }
 
 
@@ -672,6 +695,59 @@ async function main(): Promise<void> {
     assert.equal(plLeave, leaveBefore + 1, 'autoLeave fires when nothing is queued');
     assert.equal(tgPl2.isActive(chat), false, 'autoLeave leaves the call');
     await tgPl2.dispose();
+  }
+
+  // --- recording (v0.5.0): API contract + the ffmpeg encode pipeline.
+  {
+    const chat = -1001234567890;
+    const tgRec = new TgCallsClient({ client, Api });
+
+    // Stub PLAYBACK setStreamSources so the test exercises the recording API
+    // without spawning the native mixer/ffmpeg (which hangs offline). CAPTURE
+    // still goes to the real native core so join() works normally.
+    const ntgRec = tgRec.ntg as unknown as {
+      setStreamSources: (id: bigint, mode: StreamMode, media: unknown) => Promise<void>;
+    };
+    const origSet = ntgRec.setStreamSources.bind(ntgRec);
+    const playbackCalls: Array<{ microphone?: { input?: string; sampleRate?: number; channelCount?: number } }> = [];
+    Object.defineProperty(ntgRec, 'setStreamSources', {
+      configurable: true,
+      value: async (id: bigint, mode: StreamMode, media: unknown) => {
+        if (mode === StreamMode.PLAYBACK) { playbackCalls.push(media as never); return; }
+        return origSet(id, mode, media);
+      },
+    });
+
+    await assert.rejects(() => tgRec.startRecording(chat, '/tmp/rec-x.wav'), /No active call/);
+
+    await tgRec.join(chat, { kind: 'file', path: '/tmp/test.mp3' }, { autoLeave: false });
+    assert.equal(tgRec.isRecording(chat), false, 'not recording initially');
+    assert.equal(tgRec.getRecording(chat), null, 'getRecording null initially');
+
+    const info = await tgRec.startRecording(chat, '/tmp/tgcalls-rec-api.wav', { channels: 1 });
+    assert.equal(info.path, '/tmp/tgcalls-rec-api.wav');
+    assert.equal(info.sampleRate, 48000);
+    assert.equal(info.channels, 1);
+    assert.equal(tgRec.isRecording(chat), true, 'isRecording true after start');
+    assert.equal(tgRec.getRecording(chat)?.path, '/tmp/tgcalls-rec-api.wav');
+    const sent = playbackCalls[0]?.microphone;
+    assert.ok(sent?.input?.includes('ffmpeg') && sent.input.includes('/tmp/tgcalls-rec-api.wav'),
+      'PLAYBACK microphone is an ffmpeg shell encoder writing to the path');
+    assert.equal(sent?.sampleRate, 48000, 'PLAYBACK sample rate');
+    assert.equal(sent?.channelCount, 1, 'PLAYBACK channel count');
+
+    await tgRec.startRecording(chat, '/tmp/tgcalls-rec-api2.mp3');
+    assert.equal(tgRec.getRecording(chat)?.path, '/tmp/tgcalls-rec-api2.mp3', 'starting again replaces the recording');
+
+    const stopped = await tgRec.stopRecording(chat);
+    assert.equal(stopped, '/tmp/tgcalls-rec-api2.mp3', 'stopRecording returns the path');
+    assert.equal(tgRec.isRecording(chat), false, 'not recording after stop');
+    assert.equal(await tgRec.stopRecording(chat), null, 'stop again returns null');
+
+    await tgRec.startRecording(chat, '/tmp/tgcalls-rec-api3.wav');
+    await tgRec.leave(chat);
+    assert.equal(tgRec.isRecording(chat), false, 'leave clears recording state');
+    await tgRec.dispose();
   }
 
   // Stop all native instances before the runner exits. Forced process.exit()

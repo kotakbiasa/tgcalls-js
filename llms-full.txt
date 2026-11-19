@@ -1,6 +1,6 @@
 # tgcalls-js — full documentation (llms-full.txt)
 # Generated concatenation of README + docs for bulk LLM ingestion.
-# Version 0.4.0. Source of truth: the individual files in this repo.
+# Version 0.5.0. Source of truth: the individual files in this repo.
 
 
 
@@ -20,7 +20,7 @@ core by the pytgcalls team — prebuilt binaries, no compiling).
 [![Release](https://img.shields.io/github/v/release/kotakbiasa/tgcalls-js)](https://github.com/kotakbiasa/tgcalls-js/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-> **Status: v0.4.0** — audio + video + presentation + idle presence + playlist/queue + mtcute.
+> **Status: v0.5.0** — audio + video + presentation + idle presence + playlist/queue + recording + mtcute.
 > Verified end-to-end against live Telegram voice chats (audio, video up to
 > 1080p60, and 40-minute idle presence) on Node 20+.
 
@@ -28,6 +28,7 @@ core by the pytgcalls team — prebuilt binaries, no compiling).
 
 - 🎵 **Audio** from a file, direct URL, YouTube (via yt-dlp), or a custom shell PCM pipe.
 - 📃 **Playlist/queue** — `play()` / `enqueue()` / `skip()` / `playOnHold()`; tracks auto-advance, hold music loops while the queue is empty.
+- ⏺️ **Recording** — `startRecording()` / `stopRecording()`; records incoming call audio (native mix of all speakers) to wav/mp3/opus via ffmpeg.
 - 🎬 **Video** from the same source (`video: {width, height, fps}`), camera or presentation channel.
 - 🖥️ **Screen share** via `startPresentation()` / `stopPresentation()`.
 - 🧍 **Idle presence** via `joinIdle()` — stay in a call with no media (stable on UDP-capable hosts).
@@ -39,7 +40,7 @@ core by the pytgcalls team — prebuilt binaries, no compiling).
 
 ```bash
 # npm publish is pending — install from the git repo (pin a tag for stability):
-npm install github:kotakbiasa/tgcalls-js#v0.4.0
+npm install github:kotakbiasa/tgcalls-js#v0.5.0
 ```
 
 Requirements:
@@ -218,7 +219,7 @@ brew install ffmpeg yt-dlp         # macOS
 ## Install the package
 
 ```bash
-npm install github:kotakbiasa/tgcalls-js#v0.4.0
+npm install github:kotakbiasa/tgcalls-js#v0.5.0
 ```
 
 `ntgcalls` provides prebuilt native binaries (Linux x64/arm64, macOS arm64,
@@ -402,6 +403,23 @@ await tg.join(chatId, first, { autoLeave: false });
 With `autoLeave: true` and **no** `streamEnd` handler (and no playlist), the call
 auto-leaves when the stream ends.
 
+## Recording
+
+Record incoming call audio (what other participants say) to a file:
+
+```js
+await tg.join(chatId, music, { autoLeave: false });
+await tg.startRecording(chatId, './call.wav');        // or .mp3 / .opus
+// ... later
+const path = await tg.stopRecording(chatId);          // finalizes the file
+tg.isRecording(chatId);                               // false now
+```
+
+ntgcalls mixes all remote speakers natively and pipes PCM to ffmpeg, which encodes
+to the path (container from the extension). Options: `{ sampleRate: 48000, channels: 1 }`.
+One recording per chat; starting again replaces it. Leaving the call stops it too.
+After `stopRecording`, give ffmpeg a moment to finalize before reading the file.
+
 ## Events
 
 | Event | Payload | Notes |
@@ -572,6 +590,25 @@ When a track ends, the next queued track (or the hold loop) starts automatically
 The call only auto-leaves when the queue **and** hold are empty (and `autoLeave` is
 on with no `streamEnd` handler). The lower-level `setSource()` still works for
 manual swapping.
+
+#### Recording
+
+```ts
+startRecording(chat: ChatRef, path: string, options?: RecordOptions): Promise<RecordingInfo>
+stopRecording(chat: ChatRef): Promise<string | null>   // returns the recorded path
+getRecording(chat: ChatRef): RecordingInfo | null      // sync
+isRecording(chat: ChatRef): boolean                    // sync
+```
+
+Records **incoming** call audio (what other participants say). ntgcalls mixes all
+remote speakers natively and pipes s16le PCM to ffmpeg, which encodes to `path` —
+the container is inferred from the extension (`.wav`, `.mp3`, `.opus`, …).
+`RecordOptions`: `sampleRate` (default 48000), `channels` (default 1 mono).
+
+Requires an active call. One recording per chat; calling `startRecording` again
+replaces it. `stopRecording` closes the native writer, which SIGTERMs ffmpeg so the
+container finalizes cleanly — allow a moment before reading the file. Leaving the
+call also stops any recording.
 
 #### Lifecycle
 
@@ -922,6 +959,17 @@ Version in `package.json` + a `CHANGELOG.md` entry. Tag `vX.Y.Z` and
 ==============================================================================
 
 # Changelog
+
+## 0.5.0 (2026-11-19)
+
+- Feat: call recording — `startRecording(chat, path, opts?)`, `stopRecording(chat)`,
+  `getRecording(chat)`, `isRecording(chat)`. Records **incoming** call audio:
+  ntgcalls mixes all remote speakers (its native `ThreadedAudioMixer`) and pipes
+  s16le PCM to ffmpeg, which encodes to `path` (container from the extension:
+  `.wav` / `.mp3` / `.opus`). Options: `sampleRate` (default 48000), `channels`
+  (default 1). Stopping SIGTERMs ffmpeg so the container finalizes cleanly.
+- New types: `RecordOptions`, `RecordingInfo`; new media helper `recordingDescription()`.
+- Docs: recording section in the guide + API reference; `examples/record-gramjs.ts`.
 
 ## 0.4.0 (2026-11-19)
 

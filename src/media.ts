@@ -32,6 +32,30 @@ export function audioDescription(source: AudioSource, opts: TgCallsOptions) {
 }
 
 /**
+ * Build the PLAYBACK microphone AudioDescription that records incoming call
+ * audio. ntgcalls mixes all remote speakers (its ThreadedAudioMixer) and pipes
+ * s16le PCM to this shell command's stdin; ffmpeg encodes it to `path`
+ * (container inferred from the extension, e.g. .wav / .mp3 / .opus). Stopping
+ * the recording destroys the native writer, which SIGTERMs ffmpeg so it
+ * finalizes the container cleanly.
+ */
+export function recordingDescription(
+  path: string,
+  sampleRate = 48000,
+  channels = 1,
+  ffmpegPath = 'ffmpeg',
+) {
+  const input = `${ffmpegPath} -loglevel error -f s16le -ar ${sampleRate} -ac ${channels} -i pipe:0 -y ${shellQuote(path)}`;
+  return {
+    mediaSource: MediaSource.SHELL,
+    input,
+    sampleRate,
+    channelCount: channels,
+    keepOpen: false,
+  };
+}
+
+/**
  * Probe a video file or direct URL to extract original dimensions and frame rate,
  * calculating proportional target dimensions (even integers for YUV420p).
  * Matches pytgcalls ffmpeg.py check_stream behavior.

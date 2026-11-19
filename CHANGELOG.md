@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.0 (2026-11-19)
+
+- Feat: call recording — `startRecording(chat, path, opts?)`, `stopRecording(chat)`,
+  `getRecording(chat)`, `isRecording(chat)`. Records **incoming** call audio:
+  ntgcalls mixes all remote speakers (its native `ThreadedAudioMixer`) and pipes
+  s16le PCM to ffmpeg, which encodes to `path` (container from the extension:
+  `.wav` / `.mp3` / `.opus`). Options: `sampleRate` (default 48000), `channels`
+  (default 1). Stopping SIGTERMs ffmpeg so the container finalizes cleanly.
+- New types: `RecordOptions`, `RecordingInfo`; new media helper `recordingDescription()`.
+- Docs: recording section in the guide + API reference; `examples/record-gramjs.ts`.
+
 ## 0.4.0 (2026-11-19)
 
 - Feat: built-in playlist/queue — `play()`, `enqueue()`/`then()`, `skip()`,

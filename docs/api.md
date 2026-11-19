@@ -98,6 +98,25 @@ The call only auto-leaves when the queue **and** hold are empty (and `autoLeave`
 on with no `streamEnd` handler). The lower-level `setSource()` still works for
 manual swapping.
 
+#### Recording
+
+```ts
+startRecording(chat: ChatRef, path: string, options?: RecordOptions): Promise<RecordingInfo>
+stopRecording(chat: ChatRef): Promise<string | null>   // returns the recorded path
+getRecording(chat: ChatRef): RecordingInfo | null      // sync
+isRecording(chat: ChatRef): boolean                    // sync
+```
+
+Records **incoming** call audio (what other participants say). ntgcalls mixes all
+remote speakers natively and pipes s16le PCM to ffmpeg, which encodes to `path` —
+the container is inferred from the extension (`.wav`, `.mp3`, `.opus`, …).
+`RecordOptions`: `sampleRate` (default 48000), `channels` (default 1 mono).
+
+Requires an active call. One recording per chat; calling `startRecording` again
+replaces it. `stopRecording` closes the native writer, which SIGTERMs ffmpeg so the
+container finalizes cleanly — allow a moment before reading the file. Leaving the
+call also stops any recording.
+
 #### Lifecycle
 
 ```ts

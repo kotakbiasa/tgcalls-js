@@ -10,7 +10,7 @@ core by the pytgcalls team — prebuilt binaries, no compiling).
 [![Release](https://img.shields.io/github/v/release/kotakbiasa/tgcalls-js)](https://github.com/kotakbiasa/tgcalls-js/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-> **Status: v0.4.0** — audio + video + presentation + idle presence + playlist/queue + mtcute.
+> **Status: v0.5.0** — audio + video + presentation + idle presence + playlist/queue + recording + mtcute.
 > Verified end-to-end against live Telegram voice chats (audio, video up to
 > 1080p60, and 40-minute idle presence) on Node 20+.
 
@@ -18,6 +18,7 @@ core by the pytgcalls team — prebuilt binaries, no compiling).
 
 - 🎵 **Audio** from a file, direct URL, YouTube (via yt-dlp), or a custom shell PCM pipe.
 - 📃 **Playlist/queue** — `play()` / `enqueue()` / `skip()` / `playOnHold()`; tracks auto-advance, hold music loops while the queue is empty.
+- ⏺️ **Recording** — `startRecording()` / `stopRecording()`; records incoming call audio (native mix of all speakers) to wav/mp3/opus via ffmpeg.
 - 🎬 **Video** from the same source (`video: {width, height, fps}`), camera or presentation channel.
 - 🖥️ **Screen share** via `startPresentation()` / `stopPresentation()`.
 - 🧍 **Idle presence** via `joinIdle()` — stay in a call with no media (stable on UDP-capable hosts).
@@ -29,7 +30,7 @@ core by the pytgcalls team — prebuilt binaries, no compiling).
 
 ```bash
 # npm publish is pending — install from the git repo (pin a tag for stability):
-npm install github:kotakbiasa/tgcalls-js#v0.4.0
+npm install github:kotakbiasa/tgcalls-js#v0.5.0
 ```
 
 Requirements:

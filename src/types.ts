@@ -155,3 +155,21 @@ export interface StreamEndInfo {
   /** True when no user streamEnd handler is registered and the client will auto-leave. */
   willAutoLeave: boolean;
 }
+
+/** Options for startRecording(). */
+export interface RecordOptions {
+  /** PCM sample rate ntgcalls resamples incoming audio to. Default 48000. */
+  sampleRate?: number;
+  /** PCM channel count (1 mono, 2 stereo). Default 1. */
+  channels?: number;
+}
+
+/** State of an active recording (getRecording()). */
+export interface RecordingInfo {
+  /** Output file path (container inferred from extension). */
+  path: string;
+  sampleRate: number;
+  channels: number;
+  /** Date.now() when recording started. */
+  startedAt: number;
+}

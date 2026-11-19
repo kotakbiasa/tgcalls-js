@@ -109,6 +109,23 @@ await tg.join(chatId, first, { autoLeave: false });
 With `autoLeave: true` and **no** `streamEnd` handler (and no playlist), the call
 auto-leaves when the stream ends.
 
+## Recording
+
+Record incoming call audio (what other participants say) to a file:
+
+```js
+await tg.join(chatId, music, { autoLeave: false });
+await tg.startRecording(chatId, './call.wav');        // or .mp3 / .opus
+// ... later
+const path = await tg.stopRecording(chatId);          // finalizes the file
+tg.isRecording(chatId);                               // false now
+```
+
+ntgcalls mixes all remote speakers natively and pipes PCM to ffmpeg, which encodes
+to the path (container from the extension). Options: `{ sampleRate: 48000, channels: 1 }`.
+One recording per chat; starting again replaces it. Leaving the call stops it too.
+After `stopRecording`, give ffmpeg a moment to finalize before reading the file.
+
 ## Events
 
 | Event | Payload | Notes |

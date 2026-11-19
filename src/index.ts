@@ -21,13 +21,15 @@ import type {
   JoinOptions,
   JoinResult,
   MTProtoAdapter,
+  RecordOptions,
+  RecordingInfo,
   StreamEndInfo,
   TgCallsOptions,
   VideoOptions,
 } from './types.js';
 import { createAdapter, extractSsrc, sleep } from './adapters/index.js';
 import { AlreadyInCallError, NoVoiceChatError } from './errors.js';
-import { audioDescription, videoDescription, resolveYouTube, resolveYouTubeStreams, probeVideo } from './media.js';
+import { audioDescription, videoDescription, recordingDescription, resolveYouTube, resolveYouTubeStreams, probeVideo } from './media.js';
 
 export interface TgCallsEvents {
   /** Fired when the native audio stream ends (e.g. file finished). */
@@ -82,6 +84,8 @@ export class TgCallsClient {
    * track is ActiveCall.source (no separate field needed).
    */
   private readonly playlists = new Map<bigint, { queue: AudioSource[]; hold: AudioSource | null }>();
+  /** Per-chat active recording (incoming audio mixed by ntgcalls → ffmpeg). */
+  private readonly recordings = new Map<bigint, RecordingInfo>();
 
   constructor(opts: TgCallsOptions) {
     this.opts = { logger: { error: console.error.bind(console) }, ...opts };
@@ -355,6 +359,7 @@ export class TgCallsClient {
     this.videoState.delete(id);
     this.ended.delete(id);
     this.playlists.delete(id);
+    this.recordings.delete(id);
 
     let finish!: () => void;
     const cleanup = new Promise<void>((resolve) => { finish = resolve; });
@@ -559,6 +564,61 @@ export class TgCallsClient {
     if (!next) {return false;}
     await this.setSource(id, next);
     return true;
+  }
+
+  // ------------------------------------------------------------- recording
+
+  /**
+   * Record incoming call audio to `path` (container inferred from the extension,
+   * e.g. .wav / .mp3 / .opus). ntgcalls mixes all remote speakers and pipes PCM
+   * to ffmpeg, which encodes the file. Requires an active call. One recording
+   * per chat; calling again replaces it. Stop with stopRecording().
+   */
+  async startRecording(chat: ChatRef, path: string, options: RecordOptions = {}): Promise<RecordingInfo> {
+    const id = await this.resolveChatId(chat);
+    if (!this.calls.has(id)) {
+      throw new Error(`No active call in chat ${id}`);
+    }
+    if (this.recordings.has(id)) {
+      await this.stopRecording(id);
+    }
+    const sampleRate = options.sampleRate ?? 48000;
+    const channels = options.channels ?? 1;
+    const ffmpegPath = this.opts.ffmpegPath ?? 'ffmpeg';
+    await this.ntg.setStreamSources(id, StreamMode.PLAYBACK, {
+      microphone: recordingDescription(path, sampleRate, channels, ffmpegPath),
+    });
+    const info: RecordingInfo = { path, sampleRate, channels, startedAt: Date.now() };
+    this.recordings.set(id, info);
+    return info;
+  }
+
+  /**
+   * Stop recording in this chat and finalize the output file. Returns the path
+   * that was being recorded, or null if none. ffmpeg finalizes the container
+   * after the native writer closes — allow a moment before reading the file.
+   */
+  async stopRecording(chat: ChatRef): Promise<string | null> {
+    const id = await this.resolveChatId(chat);
+    const info = this.recordings.get(id);
+    if (!info) {return null;}
+    this.recordings.delete(id);
+    if (this.calls.has(id)) {
+      await this.ntg.setStreamSources(id, StreamMode.PLAYBACK, {});
+    }
+    return info.path;
+  }
+
+  /** The active recording for this chat, or null. Sync (resolved aliases only). */
+  getRecording(chat: ChatRef): RecordingInfo | null {
+    const id = this.cachedChatId(chat);
+    if (id === undefined) {return null;}
+    return this.recordings.get(id) ?? null;
+  }
+
+  /** Whether a recording is active in this chat. Sync (resolved aliases only). */
+  isRecording(chat: ChatRef): boolean {
+    return this.getRecording(chat) !== null;
   }
 
   /**
