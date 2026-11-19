@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.0 (2026-11-19)
+
+- Feat: built-in playlist/queue — `play()`, `enqueue()`/`then()`, `skip()`,
+  `playOnHold()`, `clearQueue()`, `getCurrent()`, `getQueue()`. Tracks advance
+  automatically when each one ends; a hold track loops while the queue is empty.
+  The call only auto-leaves when the queue **and** hold are empty. `skip()` with
+  nothing queued pauses playback (the call stays open).
+- Non-breaking: the lower-level `setSource()`/`join()` and the manual `streamEnd`
+  queue pattern still work unchanged.
+- Docs: playlist section in the guide + API reference; new `examples/playlist-gramjs.ts`.
+
 ## 0.3.1 (2026-11-18)
 
 - Fix: typed errors — new `TgCallsError` base plus `AlreadyInCallError`,

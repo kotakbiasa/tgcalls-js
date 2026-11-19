@@ -7,16 +7,17 @@ and screen shares into Telegram voice chats using a GramJS-family client
 [`ntgcalls`](https://www.npmjs.com/package/ntgcalls) native binding (the C++ WebRTC
 core by the pytgcalls team — prebuilt binaries, no compiling).
 
-[![Release](https://img.shields.io/github/v/release/muhnurfauzan/tgcalls-js)](https://github.com/muhnurfauzan/tgcalls-js/releases)
+[![Release](https://img.shields.io/github/v/release/kotakbiasa/tgcalls-js)](https://github.com/kotakbiasa/tgcalls-js/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-> **Status: v0.3.1** — audio + video + presentation + idle presence + mtcute.
+> **Status: v0.4.0** — audio + video + presentation + idle presence + playlist/queue + mtcute.
 > Verified end-to-end against live Telegram voice chats (audio, video up to
 > 1080p60, and 40-minute idle presence) on Node 20+.
 
 ## Features
 
 - 🎵 **Audio** from a file, direct URL, YouTube (via yt-dlp), or a custom shell PCM pipe.
+- 📃 **Playlist/queue** — `play()` / `enqueue()` / `skip()` / `playOnHold()`; tracks auto-advance, hold music loops while the queue is empty.
 - 🎬 **Video** from the same source (`video: {width, height, fps}`), camera or presentation channel.
 - 🖥️ **Screen share** via `startPresentation()` / `stopPresentation()`.
 - 🧍 **Idle presence** via `joinIdle()` — stay in a call with no media (stable on UDP-capable hosts).
@@ -28,7 +29,7 @@ core by the pytgcalls team — prebuilt binaries, no compiling).
 
 ```bash
 # npm publish is pending — install from the git repo (pin a tag for stability):
-npm install github:muhnurfauzan/tgcalls-js#v0.3.1
+npm install github:kotakbiasa/tgcalls-js#v0.4.0
 ```
 
 Requirements:

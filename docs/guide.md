@@ -75,17 +75,39 @@ await tg.joinIdle(chatId, { autoLeave: false });
 
 ## Queue / swapping tracks
 
+Built-in playlist (v0.4.0): queue tracks and they advance automatically when each
+one ends — no manual `streamEnd` wiring needed.
+
 ```js
 const tg = new TgCallsClient({ client });
+await tg.play(chatId, first);          // join + start now
+await tg.enqueue(chatId, second);      // play after first
+await tg.then(chatId, third);          // alias of enqueue
+await tg.playOnHold(chatId, holdLoop); // looped while the queue is empty
+
+// later, from a command handler:
+await tg.skip(chatId);                 // jump to the next track
+tg.getCurrent(chatId);                 // the playing source
+tg.getQueue(chatId);                   // queued sources (copy)
+await tg.clearQueue(chatId);           // empty queue + hold
+```
+
+The call stays open while tracks are queued; it only auto-leaves when the queue
+**and** hold are empty. `skip()` with nothing queued pauses playback (call stays).
+
+For manual control, `setSource()` swaps the audio without leaving and keeps the
+video channel intact:
+
+```js
 tg.on('streamEnd', async ({ chatId }) => {
   const next = queue.shift();
-  if (next) await tg.setSource(chatId, next); // swap without leaving
+  if (next) await tg.setSource(chatId, next);
 });
 await tg.join(chatId, first, { autoLeave: false });
 ```
 
-`setSource()` keeps the video channel intact. With `autoLeave: true` and **no**
-`streamEnd` handler registered, the call auto-leaves when the stream ends.
+With `autoLeave: true` and **no** `streamEnd` handler (and no playlist), the call
+auto-leaves when the stream ends.
 
 ## Events
 

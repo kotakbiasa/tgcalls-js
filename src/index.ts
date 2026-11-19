@@ -76,6 +76,12 @@ export class TgCallsClient {
   private readonly ended = new Map<bigint, Set<StreamType>>();
   /** In-flight leave operations, including cleanup after native disconnection. */
   private readonly pendingLeave = new Map<bigint, Promise<void>>();
+  /**
+   * Per-chat playlist: queued tracks played in order on streamEnd, plus an
+   * optional hold track looped while the queue is empty. The currently playing
+   * track is ActiveCall.source (no separate field needed).
+   */
+  private readonly playlists = new Map<bigint, { queue: AudioSource[]; hold: AudioSource | null }>();
 
   constructor(opts: TgCallsOptions) {
     this.opts = { logger: { error: console.error.bind(console) }, ...opts };
@@ -348,6 +354,7 @@ export class TgCallsClient {
     this.calls.delete(id);
     this.videoState.delete(id);
     this.ended.delete(id);
+    this.playlists.delete(id);
 
     let finish!: () => void;
     const cleanup = new Promise<void>((resolve) => { finish = resolve; });
@@ -440,6 +447,120 @@ export class TgCallsClient {
     if (active) {active.source = source;}
   }
 
+  // ------------------------------------------------------------- playlist
+
+  /**
+   * Join the voice chat (if not already in one) and start playing `source` now,
+   * replacing any current track. The call is kept open (autoLeave off) so the
+   * playlist controls when to leave; use enqueue()/then() to queue more tracks.
+   */
+  async play(chat: ChatRef, source: AudioSource, options: JoinOptions = {}): Promise<JoinResult> {
+    const id = await this.resolveChatId(chat);
+    if (!this.calls.has(id)) {
+      const res = await this.join(id, source, { autoLeave: false, ...options });
+      this.ensurePlaylist(id);
+      return res;
+    }
+    this.ensurePlaylist(id);
+    await this.setSource(id, source);
+    const active = this.calls.get(id)!;
+    return { chatId: id, call: active.call, ssrc: active.ssrc };
+  }
+
+  /**
+   * Queue a track to play after the current one finishes. If no call is active,
+   * joins and starts it; if the call is idle, starts it immediately; otherwise
+   * appends to the queue. Alias: then().
+   */
+  async enqueue(chat: ChatRef, source: AudioSource): Promise<void> {
+    const id = await this.resolveChatId(chat);
+    const pl = this.ensurePlaylist(id);
+    const active = this.calls.get(id);
+    if (!active) {
+      await this.join(id, source, { autoLeave: false });
+      return;
+    }
+    if (this.isIdleSource(active.source)) {
+      await this.setSource(id, source);
+      return;
+    }
+    pl.queue.push(source);
+  }
+
+  /** Alias of enqueue(): queue a track after the current one. */
+  async then(chat: ChatRef, source: AudioSource): Promise<void> {
+    return this.enqueue(chat, source);
+  }
+
+  /**
+   * Skip to the next queued track (or the hold track). With nothing queued,
+   * pauses playback (the call stays open).
+   */
+  async skip(chat: ChatRef): Promise<void> {
+    const id = await this.resolveChatId(chat);
+    if (!this.calls.has(id)) {
+      throw new Error(`No active call in chat ${id}`);
+    }
+    const pl = this.ensurePlaylist(id);
+    const next = pl.queue.shift() ?? pl.hold;
+    if (next) {
+      await this.setSource(id, next);
+    } else {
+      await this.ntg.pause(id);
+    }
+  }
+
+  /** Set a track looped while the queue is empty (hold music). Pass null to clear. */
+  async playOnHold(chat: ChatRef, source: AudioSource | null): Promise<void> {
+    const id = await this.resolveChatId(chat);
+    this.ensurePlaylist(id).hold = source;
+  }
+
+  /** Clear the queue and the hold track (the current track keeps playing). */
+  async clearQueue(chat: ChatRef): Promise<void> {
+    const id = await this.resolveChatId(chat);
+    const pl = this.playlists.get(id);
+    if (pl) {pl.queue = []; pl.hold = null;}
+  }
+
+  /** The source currently playing in this chat, or null. Sync (resolved aliases only). */
+  getCurrent(chat: ChatRef): AudioSource | null {
+    return this.getCall(chat)?.source ?? null;
+  }
+
+  /** A copy of the queued tracks for this chat. Sync (resolved aliases only). */
+  getQueue(chat: ChatRef): AudioSource[] {
+    const id = this.cachedChatId(chat);
+    if (id === undefined) {return [];}
+    return [...(this.playlists.get(id)?.queue ?? [])];
+  }
+
+  private ensurePlaylist(id: bigint): { queue: AudioSource[]; hold: AudioSource | null } {
+    let pl = this.playlists.get(id);
+    if (!pl) {
+      pl = { queue: [], hold: null };
+      this.playlists.set(id, pl);
+    }
+    return pl;
+  }
+
+  private isIdleSource(source: AudioSource | undefined): boolean {
+    return source === undefined || (source.kind === 'shell' && source.command.trim() === '');
+  }
+
+  /**
+   * Advance to the next queued track (or hold loop) when a playback ends.
+   * Returns true if a new source was started (so the caller must not auto-leave).
+   */
+  private async advancePlaylist(id: bigint): Promise<boolean> {
+    const pl = this.playlists.get(id);
+    if (!pl) {return false;}
+    const next = pl.queue.shift() ?? pl.hold;
+    if (!next) {return false;}
+    await this.setSource(id, next);
+    return true;
+  }
+
   /**
    * Start screen/video presentation (screen share channel) for an active call.
    * `source` must be file/url (ffmpeg-readable). RTC connection required —
@@ -508,33 +629,47 @@ export class TgCallsClient {
     this.nativeWired = true;
 
     this.ntg.onStreamEnd((chatId: bigint, type: StreamType) => {
-      // ntgcalls fires once per stream type. Audio-only: react to AUDIO.
-      // With a video channel: wait until BOTH audio and video have ended, so
-      // a single playback doesn't emit streamEnd twice or auto-leave early.
-      const seen = this.ended.get(chatId) ?? new Set<StreamType>();
-      seen.add(type);
-      this.ended.set(chatId, seen);
-      const done = this.videoState.has(chatId)
-        ? seen.has(StreamType.AUDIO) && seen.has(StreamType.VIDEO)
-        : type === StreamType.AUDIO;
-      if (!done) {return;}
-      this.ended.delete(chatId);
-
-      const active = this.calls.get(chatId);
-      const claimed = this.eventHandlers.streamEnd !== undefined;
-      if (active?.autoLeave && !claimed) {
-        this.leave(chatId).catch(() => { /* best-effort */ });
-      }
-      this.fireAndForget(() => this.eventHandlers.streamEnd?.({
-        chatId,
-        source: active?.source ?? null,
-        willAutoLeave: active?.autoLeave === true && !claimed,
-      }));
+      void this.handleStreamEnd(chatId, type);
     });
 
     this.ntg.onConnectionChange((chatId: bigint, info: { state: ConnectionState }) => {
       void this.handleNativeConnectionChange(chatId, info);
     });
+  }
+
+  private async handleStreamEnd(chatId: bigint, type: StreamType): Promise<void> {
+    // ntgcalls fires once per stream type. Audio-only: react to AUDIO.
+    // With a video channel: wait until BOTH audio and video have ended, so
+    // a single playback doesn't emit streamEnd twice or auto-leave early.
+    const seen = this.ended.get(chatId) ?? new Set<StreamType>();
+    seen.add(type);
+    this.ended.set(chatId, seen);
+    const done = this.videoState.has(chatId)
+      ? seen.has(StreamType.AUDIO) && seen.has(StreamType.VIDEO)
+      : type === StreamType.AUDIO;
+    if (!done) {return;}
+    this.ended.delete(chatId);
+
+    // Playlist takes priority: advance to the next queued/hold track instead of
+    // leaving. Only auto-leave when nothing is queued.
+    let advanced = false;
+    try {
+      advanced = await this.advancePlaylist(chatId);
+    } catch (err) {
+      this.opts.logger?.error('[tgcalls-js] playlist advance error:', err);
+    }
+
+    const active = this.calls.get(chatId);
+    const claimed = this.eventHandlers.streamEnd !== undefined;
+    const willAutoLeave = !advanced && active?.autoLeave === true && !claimed;
+    if (willAutoLeave) {
+      this.leave(chatId).catch(() => { /* best-effort */ });
+    }
+    this.fireAndForget(() => this.eventHandlers.streamEnd?.({
+      chatId,
+      source: active?.source ?? null,
+      willAutoLeave,
+    }));
   }
 
   private async handleNativeConnectionChange(

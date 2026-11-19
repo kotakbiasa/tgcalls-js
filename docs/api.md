@@ -68,6 +68,36 @@ unmute(chat: ChatRef): Promise<boolean>
 time(chat: ChatRef): Promise<number>                          // seconds streamed
 ```
 
+#### Playlist / queue
+
+```ts
+play(chat: ChatRef, source: AudioSource, options?: JoinOptions): Promise<JoinResult>
+enqueue(chat: ChatRef, source: AudioSource): Promise<void>   // alias: then()
+then(chat: ChatRef, source: AudioSource): Promise<void>
+skip(chat: ChatRef): Promise<void>
+playOnHold(chat: ChatRef, source: AudioSource | null): Promise<void>
+clearQueue(chat: ChatRef): Promise<void>
+getCurrent(chat: ChatRef): AudioSource | null                // sync
+getQueue(chat: ChatRef): AudioSource[]                       // sync; copy
+```
+
+- `play` — join (if not already in a call) and start `source` now, replacing the
+  current track. The call is kept open (`autoLeave` off) so the playlist decides
+  when to leave.
+- `enqueue` / `then` — queue a track after the current one. Joins if no call is
+  active; starts immediately if the call is idle; otherwise appends to the queue.
+- `skip` — jump to the next queued track (or the hold track). With nothing queued,
+  pauses playback (the call stays open).
+- `playOnHold` — set a track looped while the queue is empty (hold music); `null` clears it.
+- `clearQueue` — empty the queue and clear the hold track (current track keeps playing).
+- `getCurrent` / `getQueue` — inspect the playing track and queued tracks (sync;
+  numeric id or previously-resolved alias).
+
+When a track ends, the next queued track (or the hold loop) starts automatically.
+The call only auto-leaves when the queue **and** hold are empty (and `autoLeave` is
+on with no `streamEnd` handler). The lower-level `setSource()` still works for
+manual swapping.
+
 #### Lifecycle
 
 ```ts

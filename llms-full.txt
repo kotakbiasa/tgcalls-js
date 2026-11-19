@@ -1,6 +1,6 @@
 # tgcalls-js — full documentation (llms-full.txt)
 # Generated concatenation of README + docs for bulk LLM ingestion.
-# Version 0.3.1. Source of truth: the individual files in this repo.
+# Version 0.4.0. Source of truth: the individual files in this repo.
 
 
 
@@ -17,16 +17,17 @@ and screen shares into Telegram voice chats using a GramJS-family client
 [`ntgcalls`](https://www.npmjs.com/package/ntgcalls) native binding (the C++ WebRTC
 core by the pytgcalls team — prebuilt binaries, no compiling).
 
-[![Release](https://img.shields.io/github/v/release/muhnurfauzan/tgcalls-js)](https://github.com/muhnurfauzan/tgcalls-js/releases)
+[![Release](https://img.shields.io/github/v/release/kotakbiasa/tgcalls-js)](https://github.com/kotakbiasa/tgcalls-js/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-> **Status: v0.3.1** — audio + video + presentation + idle presence + mtcute.
+> **Status: v0.4.0** — audio + video + presentation + idle presence + playlist/queue + mtcute.
 > Verified end-to-end against live Telegram voice chats (audio, video up to
 > 1080p60, and 40-minute idle presence) on Node 20+.
 
 ## Features
 
 - 🎵 **Audio** from a file, direct URL, YouTube (via yt-dlp), or a custom shell PCM pipe.
+- 📃 **Playlist/queue** — `play()` / `enqueue()` / `skip()` / `playOnHold()`; tracks auto-advance, hold music loops while the queue is empty.
 - 🎬 **Video** from the same source (`video: {width, height, fps}`), camera or presentation channel.
 - 🖥️ **Screen share** via `startPresentation()` / `stopPresentation()`.
 - 🧍 **Idle presence** via `joinIdle()` — stay in a call with no media (stable on UDP-capable hosts).
@@ -38,7 +39,7 @@ core by the pytgcalls team — prebuilt binaries, no compiling).
 
 ```bash
 # npm publish is pending — install from the git repo (pin a tag for stability):
-npm install github:muhnurfauzan/tgcalls-js#v0.3.1
+npm install github:kotakbiasa/tgcalls-js#v0.4.0
 ```
 
 Requirements:
@@ -217,7 +218,7 @@ brew install ffmpeg yt-dlp         # macOS
 ## Install the package
 
 ```bash
-npm install github:muhnurfauzan/tgcalls-js#v0.3.1
+npm install github:kotakbiasa/tgcalls-js#v0.4.0
 ```
 
 `ntgcalls` provides prebuilt native binaries (Linux x64/arm64, macOS arm64,
@@ -367,17 +368,39 @@ await tg.joinIdle(chatId, { autoLeave: false });
 
 ## Queue / swapping tracks
 
+Built-in playlist (v0.4.0): queue tracks and they advance automatically when each
+one ends — no manual `streamEnd` wiring needed.
+
 ```js
 const tg = new TgCallsClient({ client });
+await tg.play(chatId, first);          // join + start now
+await tg.enqueue(chatId, second);      // play after first
+await tg.then(chatId, third);          // alias of enqueue
+await tg.playOnHold(chatId, holdLoop); // looped while the queue is empty
+
+// later, from a command handler:
+await tg.skip(chatId);                 // jump to the next track
+tg.getCurrent(chatId);                 // the playing source
+tg.getQueue(chatId);                   // queued sources (copy)
+await tg.clearQueue(chatId);           // empty queue + hold
+```
+
+The call stays open while tracks are queued; it only auto-leaves when the queue
+**and** hold are empty. `skip()` with nothing queued pauses playback (call stays).
+
+For manual control, `setSource()` swaps the audio without leaving and keeps the
+video channel intact:
+
+```js
 tg.on('streamEnd', async ({ chatId }) => {
   const next = queue.shift();
-  if (next) await tg.setSource(chatId, next); // swap without leaving
+  if (next) await tg.setSource(chatId, next);
 });
 await tg.join(chatId, first, { autoLeave: false });
 ```
 
-`setSource()` keeps the video channel intact. With `autoLeave: true` and **no**
-`streamEnd` handler registered, the call auto-leaves when the stream ends.
+With `autoLeave: true` and **no** `streamEnd` handler (and no playlist), the call
+auto-leaves when the stream ends.
 
 ## Events
 
@@ -519,6 +542,36 @@ mute(chat: ChatRef): Promise<boolean>
 unmute(chat: ChatRef): Promise<boolean>
 time(chat: ChatRef): Promise<number>                          // seconds streamed
 ```
+
+#### Playlist / queue
+
+```ts
+play(chat: ChatRef, source: AudioSource, options?: JoinOptions): Promise<JoinResult>
+enqueue(chat: ChatRef, source: AudioSource): Promise<void>   // alias: then()
+then(chat: ChatRef, source: AudioSource): Promise<void>
+skip(chat: ChatRef): Promise<void>
+playOnHold(chat: ChatRef, source: AudioSource | null): Promise<void>
+clearQueue(chat: ChatRef): Promise<void>
+getCurrent(chat: ChatRef): AudioSource | null                // sync
+getQueue(chat: ChatRef): AudioSource[]                       // sync; copy
+```
+
+- `play` — join (if not already in a call) and start `source` now, replacing the
+  current track. The call is kept open (`autoLeave` off) so the playlist decides
+  when to leave.
+- `enqueue` / `then` — queue a track after the current one. Joins if no call is
+  active; starts immediately if the call is idle; otherwise appends to the queue.
+- `skip` — jump to the next queued track (or the hold track). With nothing queued,
+  pauses playback (the call stays open).
+- `playOnHold` — set a track looped while the queue is empty (hold music); `null` clears it.
+- `clearQueue` — empty the queue and clear the hold track (current track keeps playing).
+- `getCurrent` / `getQueue` — inspect the playing track and queued tracks (sync;
+  numeric id or previously-resolved alias).
+
+When a track ends, the next queued track (or the hold loop) starts automatically.
+The call only auto-leaves when the queue **and** hold are empty (and `autoLeave` is
+on with no `streamEnd` handler). The lower-level `setSource()` still works for
+manual swapping.
 
 #### Lifecycle
 
@@ -869,6 +922,17 @@ Version in `package.json` + a `CHANGELOG.md` entry. Tag `vX.Y.Z` and
 ==============================================================================
 
 # Changelog
+
+## 0.4.0 (2026-11-19)
+
+- Feat: built-in playlist/queue — `play()`, `enqueue()`/`then()`, `skip()`,
+  `playOnHold()`, `clearQueue()`, `getCurrent()`, `getQueue()`. Tracks advance
+  automatically when each one ends; a hold track loops while the queue is empty.
+  The call only auto-leaves when the queue **and** hold are empty. `skip()` with
+  nothing queued pauses playback (the call stays open).
+- Non-breaking: the lower-level `setSource()`/`join()` and the manual `streamEnd`
+  queue pattern still work unchanged.
+- Docs: playlist section in the guide + API reference; new `examples/playlist-gramjs.ts`.
 
 ## 0.3.1 (2026-11-18)
 

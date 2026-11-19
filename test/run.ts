@@ -1,6 +1,6 @@
 import { strict as assert } from 'assert';
 import { spawnSync } from 'child_process';
-import { ConnectionState } from 'ntgcalls';
+import { ConnectionState, StreamType } from 'ntgcalls';
 import { GramjsAdapter, MtcuteAdapter, TgCallsClient, loadTl, resetTlCache } from '../src/index.js';
 import type { MTProtoLike } from '../src/index.js';
 
@@ -602,6 +602,77 @@ async function main(): Promise<void> {
   const mtcuteRes2 = await tgMtcute2.join(-1001234567890, { kind: 'file', path: '/tmp/test.mp3' });
   assert.equal(mtcuteRes2.chatId, -1001234567890n);
   await tgMtcute2.leave(-1001234567890);
+
+  // --- playlist/queue (v0.4.0): advance, skip, hold loop, autoLeave.
+  // Shell sine sources (60s) play real audio so the native core does not fire
+  // streamEnd on its own during the test; handleStreamEnd is driven manually.
+  {
+    let plLeave = 0;
+    (client as { invoke: (r: unknown) => Promise<unknown> }).invoke = async (request) => {
+      const req = request as { className: string };
+      if (req.className === 'GetFullChannel') {
+        return { fullChat: { call: { id: '987654321', accessHash: '1122334455' } } };
+      }
+      if (req.className === 'JoinGroupCall') {
+        return { updates: [{ className: 'UpdateGroupCallConnection', params: { data: CONNECTION_PARAMS } }] };
+      }
+      if (req.className === 'LeaveGroupCall') { plLeave++; return {}; }
+      return {};
+    };
+    // Distinct (nonexistent) file paths, like the rest of the suite: the native
+    // core fails fast on them without spawning long playback, so streamEnd is
+    // driven manually via handleStreamEnd and nothing hangs.
+    const A = { kind: 'file' as const, path: '/tmp/tgcalls-pl-a.mp3' };
+    const B = { kind: 'file' as const, path: '/tmp/tgcalls-pl-b.mp3' };
+    const C = { kind: 'file' as const, path: '/tmp/tgcalls-pl-c.mp3' };
+    const H = { kind: 'file' as const, path: '/tmp/tgcalls-pl-h.mp3' };
+    const chat = -1001234567890;
+    type PlInternals = {
+      handleStreamEnd: (id: bigint, t: StreamType) => Promise<void>;
+    };
+
+    const tgPl = new TgCallsClient({ client, Api });
+    const pl = tgPl as unknown as PlInternals;
+    await tgPl.play(chat, A);
+    await tgPl.enqueue(chat, B);
+    await tgPl.then(chat, C);
+    assert.deepEqual(tgPl.getQueue(chat), [B, C], 'enqueue/then build the queue in order');
+    assert.deepEqual(tgPl.getCurrent(chat), A, 'getCurrent is the playing track');
+
+    await pl.handleStreamEnd(BigInt(chat), StreamType.AUDIO);
+    assert.deepEqual(tgPl.getCurrent(chat), B, 'streamEnd advances to the next queued track');
+    assert.deepEqual(tgPl.getQueue(chat), [C], 'queue shifted after advance');
+    assert.equal(tgPl.isActive(chat), true, 'playlist keeps the call open');
+    assert.equal(plLeave, 0, 'advancing the queue does not leave');
+
+    await tgPl.skip(chat);
+    assert.deepEqual(tgPl.getCurrent(chat), C, 'skip jumps to the next track');
+    assert.deepEqual(tgPl.getQueue(chat), [], 'queue empty after skip');
+
+    await tgPl.playOnHold(chat, H);
+    await pl.handleStreamEnd(BigInt(chat), StreamType.AUDIO);
+    assert.deepEqual(tgPl.getCurrent(chat), H, 'hold plays when the queue is empty');
+    await pl.handleStreamEnd(BigInt(chat), StreamType.AUDIO);
+    assert.deepEqual(tgPl.getCurrent(chat), H, 'hold loops');
+    assert.equal(plLeave, 0, 'hold loop does not leave');
+
+    await tgPl.clearQueue(chat);
+    assert.deepEqual(tgPl.getQueue(chat), [], 'clearQueue empties the queue');
+    await tgPl.skip(chat);
+    assert.equal(tgPl.isActive(chat), true, 'skip with nothing queued pauses but stays in the call');
+    await tgPl.dispose();
+
+    // autoLeave still fires when nothing is queued (no playlist takeover).
+    const tgPl2 = new TgCallsClient({ client, Api });
+    const pl2 = tgPl2 as unknown as PlInternals;
+    await tgPl2.join(chat, A); // autoLeave defaults to true
+    const leaveBefore = plLeave;
+    await pl2.handleStreamEnd(BigInt(chat), StreamType.AUDIO);
+    await new Promise((r) => setTimeout(r, 60));
+    assert.equal(plLeave, leaveBefore + 1, 'autoLeave fires when nothing is queued');
+    assert.equal(tgPl2.isActive(chat), false, 'autoLeave leaves the call');
+    await tgPl2.dispose();
+  }
 
   // Stop all native instances before the runner exits. Forced process.exit()
   // while WebRTC worker threads are alive can segfault after the assertions pass.
