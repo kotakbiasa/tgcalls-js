@@ -7,7 +7,7 @@
 Key facts for assistants:
 - A **user account** session is required; bots cannot join Telegram voice chats.
 - `ffmpeg` must be on PATH (yt-dlp only for YouTube). Node.js >= 18.
-- Install: `npm install github:kotakbiasa/tgcalls-js#v0.3.1` (npm publish pending).
+- Install: `npm install github:muhnurfauzan/tgcalls-js#v0.3.1` (npm publish pending).
 - Main entry: `TgCallsClient` from `tgcalls-js`. Client type (teleproto/GramJS/mtcute) is auto-detected.
 - `ConnectionState` is a numeric enum: CONNECTING=1, CONNECTED=2, FAILED=4, TIMEOUT=8, CLOSED=16.
 - Errors extend `TgCallsError`: `AlreadyInCallError` (has `chatId`), `NoVoiceChatError`, `UnrecognizedClientError`.

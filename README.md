@@ -7,7 +7,7 @@ and screen shares into Telegram voice chats using a GramJS-family client
 [`ntgcalls`](https://www.npmjs.com/package/ntgcalls) native binding (the C++ WebRTC
 core by the pytgcalls team — prebuilt binaries, no compiling).
 
-[![Release](https://img.shields.io/github/v/release/kotakbiasa/tgcalls-js)](https://github.com/kotakbiasa/tgcalls-js/releases)
+[![Release](https://img.shields.io/github/v/release/muhnurfauzan/tgcalls-js)](https://github.com/muhnurfauzan/tgcalls-js/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 > **Status: v0.3.1** — audio + video + presentation + idle presence + mtcute.
@@ -28,7 +28,7 @@ core by the pytgcalls team — prebuilt binaries, no compiling).
 
 ```bash
 # npm publish is pending — install from the git repo (pin a tag for stability):
-npm install github:kotakbiasa/tgcalls-js#v0.3.1
+npm install github:muhnurfauzan/tgcalls-js#v0.3.1
 ```
 
 Requirements:

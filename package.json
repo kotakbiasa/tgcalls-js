@@ -31,12 +31,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/kotakbiasa/tgcalls-js.git"
+    "url": "git+https://github.com/muhnurfauzan/tgcalls-js.git"
   },
   "bugs": {
-    "url": "https://github.com/kotakbiasa/tgcalls-js/issues"
+    "url": "https://github.com/muhnurfauzan/tgcalls-js/issues"
   },
-  "homepage": "https://github.com/kotakbiasa/tgcalls-js#readme",
+  "homepage": "https://github.com/muhnurfauzan/tgcalls-js#readme",
   "keywords": [
     "telegram",
     "userbot",
