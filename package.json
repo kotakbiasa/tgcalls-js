@@ -53,7 +53,7 @@
   "author": "kotakbiasa",
   "license": "MIT",
   "dependencies": {
-    "ntgcalls": "3.0.6"
+    "ntgcalls": "3.0.7"
   },
   "peerDependencies": {
     "big-integer": ">=1.6"
