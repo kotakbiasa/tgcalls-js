@@ -2,7 +2,15 @@
 
 ## 0.6.0 (2026-11-19)
 
-- Feat: **incoming P2P (1-on-1) voice calls** — `listenCalls({ source, autoAccept?, onIncoming? })`,
+> **⚠️ P2P calls are EXPERIMENTAL and not yet functional live.** The signaling
+> orchestration is implemented and offline-tested, but actual calls are blocked by
+> an ntgcalls **JS-binding** bug: `initExchange` throws `An array was expected`
+> when converting `DhConfig` (`std::vector<byte>`) — reproduced with Buffer /
+> Uint8Array / Array / ArrayBuffer / DataView inputs, on ntgcalls 3.0.7 **and**
+> 3.1.0-beta01. The Python/Go bindings accept the same inputs. Needs an upstream
+> ntgcalls fix before P2P works end-to-end. Group-call features are unaffected.
+
+- Feat (experimental): **incoming P2P (1-on-1) voice calls** — `listenCalls({ source, autoAccept?, onIncoming? })`,
   `stopListeningCalls()`, `activeCallPeers()`. Answers incoming Telegram voice calls
   and streams an audio source into them. The DH key exchange and WebRTC engine run
   in the ntgcalls native core; the library orchestrates the MTProto signaling

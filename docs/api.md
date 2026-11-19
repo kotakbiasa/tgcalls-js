@@ -119,6 +119,12 @@ call also stops any recording.
 
 #### P2P calls (incoming)
 
+> **⚠️ Experimental — not yet functional live.** Blocked by an ntgcalls JS-binding
+> bug (`initExchange` throws `An array was expected` converting `DhConfig`;
+> reproduces on 3.0.7 and 3.1.0-beta01 with every input form). The orchestration
+> below is implemented and offline-tested; it will work once the upstream binding
+> is fixed.
+
 ```ts
 listenCalls(options: ListenCallsOptions): Promise<void>
 stopListeningCalls(): Promise<void>

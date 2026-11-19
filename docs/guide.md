@@ -128,6 +128,10 @@ After `stopRecording`, give ffmpeg a moment to finalize before reading the file.
 
 ## P2P calls (incoming)
 
+> **⚠️ Experimental — not yet functional live** (upstream ntgcalls JS-binding
+> `initExchange` bug; see CHANGELOG 0.6.0). The API below is implemented and
+> offline-tested but actual calls fail until the binding is fixed upstream.
+
 Answer incoming 1-on-1 voice calls and stream audio into them (e.g. a voice bot):
 
 ```js

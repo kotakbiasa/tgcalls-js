@@ -20,7 +20,7 @@ brew install ffmpeg yt-dlp         # macOS
 ## Install the package
 
 ```bash
-npm install github:kotakbiasa/tgcalls-js#v0.6.0
+npm install github:kotakbiasa/tgcalls-js#v0.5.0
 ```
 
 `ntgcalls` provides prebuilt native binaries (Linux x64/arm64, macOS arm64,
