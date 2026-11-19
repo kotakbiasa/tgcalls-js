@@ -820,6 +820,50 @@ async function main(): Promise<void> {
     await mgr2.stop();
   }
 
+  // --- multi-handler events (v0.6.0): on/off/once/unsubscribe, all handlers run.
+  {
+    const tgEv = new TgCallsClient({ client, Api });
+    const emit = (tgEv as unknown as { emit: (e: string, ...a: unknown[]) => void }).emit.bind(tgEv);
+    const wait = () => new Promise((r) => setTimeout(r, 10));
+    const seen: string[] = [];
+    const h1 = () => { seen.push('h1'); };
+    const h2 = () => { seen.push('h2'); };
+    tgEv.on('streamEnd', h1);
+    tgEv.on('streamEnd', h2);
+    emit('streamEnd', { chatId: 1n, source: null, willAutoLeave: false });
+    await wait();
+    assert.deepEqual(seen, ['h1', 'h2'], 'all handlers run in registration order');
+
+    tgEv.off('streamEnd', h1);
+    seen.length = 0;
+    emit('streamEnd', { chatId: 1n, source: null, willAutoLeave: false });
+    await wait();
+    assert.deepEqual(seen, ['h2'], 'off removes a specific handler');
+
+    const un = tgEv.on('streamEnd', h1);
+    un(); // unsubscribe via returned function
+    seen.length = 0;
+    emit('streamEnd', { chatId: 1n, source: null, willAutoLeave: false });
+    await wait();
+    assert.deepEqual(seen, ['h2'], 'returned unsubscribe removes the handler');
+
+    let onceCount = 0;
+    tgEv.once('connectionChange', () => { onceCount++; });
+    emit('connectionChange', 1n, 2);
+    emit('connectionChange', 1n, 2);
+    await wait();
+    assert.equal(onceCount, 1, 'once runs exactly once then removes itself');
+
+    // a throwing handler does not stop the others or crash
+    seen.length = 0;
+    tgEv.on('streamEnd', () => { throw new Error('boom'); });
+    tgEv.on('streamEnd', h2);
+    emit('streamEnd', { chatId: 1n, source: null, willAutoLeave: false });
+    await wait();
+    assert.ok(seen.includes('h2'), 'a throwing handler does not block the rest');
+    await tgEv.dispose();
+  }
+
   // Stop all native instances before the runner exits. Forced process.exit()
   // while WebRTC worker threads are alive can segfault after the assertions pass.
   await Promise.all([

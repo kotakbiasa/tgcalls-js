@@ -167,7 +167,9 @@ reject specific callers. Outgoing calls and multi-party conference are follow-up
 | 16 | CLOSED |
 
 A handler that throws/rejects is logged (via the `logger` option) and never crashes
-the process. Registering a `streamEnd` handler suppresses auto-leave.
+the process. Multiple handlers per event all run (registration order); `on`/`once`
+return an unsubscribe function and `off` removes one. Registering any `streamEnd`
+handler suppresses auto-leave.
 
 ## Adapters / client detection
 

@@ -63,7 +63,7 @@ export class TgCallsClient {
   private readonly chatAliases = new Map<string, bigint>();
   /** Chats with a join operation in progress; prevents duplicate parallel joins. */
   private readonly joining = new Set<bigint>();
-  private readonly eventHandlers: Partial<TgCallsEvents> = {};
+  private readonly eventHandlers: { [K in keyof TgCallsEvents]?: Array<TgCallsEvents[K]> } = {};
   private updateUninstall: (() => void) | null = null;
   private pendingConnectionParams: string | null = null;
   /** Connection updates have no reliable chat correlation, so consume them serially. */
@@ -96,11 +96,43 @@ export class TgCallsClient {
     this.ntg = new NTgCalls();
   }
 
-  /** Register an event handler (last registration wins per event). */
-  on<K extends keyof TgCallsEvents>(event: K, handler: TgCallsEvents[K]): void {
-    this.eventHandlers[event] = handler;
+  /**
+   * Register an event handler. Multiple handlers per event are supported and all
+   * run (in registration order). Returns an unsubscribe function. Registering any
+   * `streamEnd` handler suppresses auto-leave.
+   */
+  on<K extends keyof TgCallsEvents>(event: K, handler: TgCallsEvents[K]): () => void {
+    const list = (this.eventHandlers[event] ??= []) as Array<TgCallsEvents[K]>;
+    list.push(handler);
     if (event !== 'update') {
       this.wireNative();
+    }
+    return () => this.off(event, handler);
+  }
+
+  /** Remove a previously registered handler (no-op if not registered). */
+  off<K extends keyof TgCallsEvents>(event: K, handler: TgCallsEvents[K]): void {
+    const list = this.eventHandlers[event] as Array<TgCallsEvents[K]> | undefined;
+    if (!list) {return;}
+    const i = list.indexOf(handler);
+    if (i >= 0) {list.splice(i, 1);}
+  }
+
+  /** Register a handler that runs once, then removes itself. Returns unsubscribe. */
+  once<K extends keyof TgCallsEvents>(event: K, handler: TgCallsEvents[K]): () => void {
+    const wrap = ((...args: Parameters<TgCallsEvents[K]>) => {
+      this.off(event, wrap as TgCallsEvents[K]);
+      return (handler as (...a: any[]) => unknown)(...args);
+    }) as TgCallsEvents[K];
+    return this.on(event, wrap);
+  }
+
+  /** Run every registered handler for an event; a throwing handler never crashes. */
+  private emit<K extends keyof TgCallsEvents>(event: K, ...args: Parameters<TgCallsEvents[K]>): void {
+    const list = this.eventHandlers[event];
+    if (!list || list.length === 0) {return;}
+    for (const h of [...list]) {
+      this.fireAndForget(() => (h as (...a: any[]) => unknown)(...args));
     }
   }
 
@@ -749,16 +781,16 @@ export class TgCallsClient {
     }
 
     const active = this.calls.get(chatId);
-    const claimed = this.eventHandlers.streamEnd !== undefined;
+    const claimed = (this.eventHandlers.streamEnd?.length ?? 0) > 0;
     const willAutoLeave = !advanced && active?.autoLeave === true && !claimed;
     if (willAutoLeave) {
       this.leave(chatId).catch(() => { /* best-effort */ });
     }
-    this.fireAndForget(() => this.eventHandlers.streamEnd?.({
+    this.emit('streamEnd', {
       chatId,
       source: active?.source ?? null,
       willAutoLeave,
-    }));
+    });
   }
 
   private async handleNativeConnectionChange(
@@ -771,7 +803,7 @@ export class TgCallsClient {
       // callers can safely destroy the MTProto client from the event callback.
       await this.leaveResolved(chatId);
     }
-    this.fireAndForget(() => this.eventHandlers.connectionChange?.(chatId, info.state));
+    this.emit('connectionChange', chatId, info.state);
   }
 
   /** Resolve any chat ref to a marked id (-100... for channels/supergroups). */
@@ -823,7 +855,7 @@ export class TgCallsClient {
   private installUpdateHandler(): void {
     if (this.updateUninstall !== null) {return;}
     this.updateUninstall = this.adapter.installUpdateHandler(
-      (u) => this.fireAndForget(() => this.eventHandlers.update?.(u)),
+      (u) => this.emit('update', u),
       (params) => { this.pendingConnectionParams = params; },
     );
   }

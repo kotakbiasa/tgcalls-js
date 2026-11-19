@@ -10,6 +10,10 @@
 > 3.1.0-beta01. The Python/Go bindings accept the same inputs. Needs an upstream
 > ntgcalls fix before P2P works end-to-end. Group-call features are unaffected.
 
+- Feat: **multi-handler events** — `on()` now supports multiple handlers per event
+  (all run in registration order) and returns an unsubscribe function; new `off()`
+  and `once()`. A throwing handler no longer blocks the others. Previously the last
+  registration won. Non-breaking for single-handler use.
 - Feat (experimental): **incoming P2P (1-on-1) voice calls** — `listenCalls({ source, autoAccept?, onIncoming? })`,
   `stopListeningCalls()`, `activeCallPeers()`. Answers incoming Telegram voice calls
   and streams an audio source into them. The DH key exchange and WebRTC engine run

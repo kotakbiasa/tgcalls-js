@@ -1,6 +1,6 @@
 # tgcalls-js — full documentation (llms-full.txt)
 # Generated concatenation of README + docs for bulk LLM ingestion.
-# Version 0.6.0 (P2P experimental). Source of truth: the individual files in this repo.
+# Version 0.6.0 (multi-handler events; P2P experimental). Source of truth: the individual files in this repo.
 
 
 
@@ -462,7 +462,9 @@ reject specific callers. Outgoing calls and multi-party conference are follow-up
 | 16 | CLOSED |
 
 A handler that throws/rejects is logged (via the `logger` option) and never crashes
-the process. Registering a `streamEnd` handler suppresses auto-leave.
+the process. Multiple handlers per event all run (registration order); `on`/`once`
+return an unsubscribe function and `off` removes one. Registering any `streamEnd`
+handler suppresses auto-leave.
 
 ## Adapters / client detection
 
@@ -674,10 +676,16 @@ resolveChatId(chat: ChatRef): Promise<bigint> // username / t.me link / id → m
 #### Events
 
 ```ts
-on<K extends keyof TgCallsEvents>(event: K, handler: TgCallsEvents[K]): void
+on<K extends keyof TgCallsEvents>(event: K, handler: TgCallsEvents[K]): () => void
+off<K extends keyof TgCallsEvents>(event: K, handler: TgCallsEvents[K]): void
+once<K extends keyof TgCallsEvents>(event: K, handler: TgCallsEvents[K]): () => void
 ```
 
-Last registration wins per event. Registering `streamEnd` suppresses auto-leave.
+Multiple handlers per event are supported — all run in registration order. `on`
+and `once` return an unsubscribe function; `off` removes a specific handler.
+`once` runs a handler a single time then removes it. A handler that throws/rejects
+is logged (via `logger`) and never blocks the other handlers or crashes the process.
+Registering any `streamEnd` handler suppresses auto-leave.
 
 ## Types
 
@@ -1015,6 +1023,10 @@ Version in `package.json` + a `CHANGELOG.md` entry. Tag `vX.Y.Z` and
 > 3.1.0-beta01. The Python/Go bindings accept the same inputs. Needs an upstream
 > ntgcalls fix before P2P works end-to-end. Group-call features are unaffected.
 
+- Feat: **multi-handler events** — `on()` now supports multiple handlers per event
+  (all run in registration order) and returns an unsubscribe function; new `off()`
+  and `once()`. A throwing handler no longer blocks the others. Previously the last
+  registration won. Non-breaking for single-handler use.
 - Feat (experimental): **incoming P2P (1-on-1) voice calls** — `listenCalls({ source, autoAccept?, onIncoming? })`,
   `stopListeningCalls()`, `activeCallPeers()`. Answers incoming Telegram voice calls
   and streams an audio source into them. The DH key exchange and WebRTC engine run

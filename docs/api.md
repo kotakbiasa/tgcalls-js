@@ -158,10 +158,16 @@ resolveChatId(chat: ChatRef): Promise<bigint> // username / t.me link / id → m
 #### Events
 
 ```ts
-on<K extends keyof TgCallsEvents>(event: K, handler: TgCallsEvents[K]): void
+on<K extends keyof TgCallsEvents>(event: K, handler: TgCallsEvents[K]): () => void
+off<K extends keyof TgCallsEvents>(event: K, handler: TgCallsEvents[K]): void
+once<K extends keyof TgCallsEvents>(event: K, handler: TgCallsEvents[K]): () => void
 ```
 
-Last registration wins per event. Registering `streamEnd` suppresses auto-leave.
+Multiple handlers per event are supported — all run in registration order. `on`
+and `once` return an unsubscribe function; `off` removes a specific handler.
+`once` runs a handler a single time then removes it. A handler that throws/rejects
+is logged (via `logger`) and never blocks the other handlers or crashes the process.
+Registering any `streamEnd` handler suppresses auto-leave.
 
 ## Types
 
