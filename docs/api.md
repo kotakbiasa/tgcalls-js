@@ -1,0 +1,229 @@
+# API reference
+
+All exports come from the package root (`import … from 'tgcalls-js'`).
+
+## `TgCallsClient`
+
+### Constructor
+
+```ts
+new TgCallsClient(options: TgCallsOptions)
+```
+
+#### `TgCallsOptions`
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `client` | `MTProtoLike \| MtcuteLike \| MTProtoAdapter` | — | teleproto/GramJS client, mtcute client, or a custom adapter |
+| `Api` | `unknown` | auto | TL API namespace; pass per client when mixing `telegram` + `teleproto` |
+| `ffmpegPath` | `string` | `"ffmpeg"` | ffmpeg binary |
+| `ffprobePath` | `string` | `"ffprobe"` | ffprobe binary |
+| `ytDlpPath` | `string` | `"yt-dlp"` | yt-dlp binary |
+| `logger` | `{ error(...args: unknown[]): void }` | `console.error` | sink for internal warnings (e.g. a throwing event handler) |
+
+### Properties
+
+| Property | Type | Description |
+|---|---|---|
+| `ntg` | `NTgCalls` | the underlying native instance (advanced use) |
+
+### Methods
+
+#### Joining
+
+```ts
+join(chat: ChatRef, source: AudioSource, options?: JoinOptions): Promise<JoinResult>
+joinYouTube(chat: ChatRef, url: string, options?: JoinOptions): Promise<JoinResult>
+joinIdle(chat: ChatRef, options?: JoinOptions): Promise<JoinResult>
+resolveYouTube(url: string, video?: boolean): Promise<string | null>
+```
+
+- `join` — join the voice chat and stream `source`. Throws `AlreadyInCallError` if
+  already in a call (or mid-join) in that chat.
+- `joinYouTube` — resolve `url` via yt-dlp, then `join`.
+- `joinIdle` — join with no media. With `allowCreate: true`, creates a missing call
+  in RTMP-stream mode (for UDP-blocked hosts); an existing call is not converted.
+  Throws `NoVoiceChatError` if there is no call and `allowCreate` is not set.
+- `resolveYouTube` — resolve a page URL to a direct media URL (or `null`).
+
+#### Presentation (screen share)
+
+```ts
+startPresentation(chat: ChatRef, source: Exclude<AudioSource, {kind:'shell'}>, video?: VideoOptions): Promise<void>
+stopPresentation(chat: ChatRef): Promise<void>
+```
+
+`startPresentation` joins the presentation channel with a file/url video source
+(replaces the camera channel). `stopPresentation` leaves the presentation channel;
+the call stays.
+
+#### Playback control
+
+```ts
+setSource(chat: ChatRef, source: AudioSource): Promise<void>  // swap audio, keep video (queue)
+pause(chat: ChatRef): Promise<boolean>
+resume(chat: ChatRef): Promise<boolean>
+mute(chat: ChatRef): Promise<boolean>
+unmute(chat: ChatRef): Promise<boolean>
+time(chat: ChatRef): Promise<number>                          // seconds streamed
+```
+
+#### Lifecycle
+
+```ts
+leave(chat: ChatRef): Promise<void>   // ntgcalls.stop + phone.leaveGroupCall (best-effort)
+dispose(): Promise<void>              // stop all calls + detach update handlers; await before disposing the MTProto client
+```
+
+#### Introspection
+
+```ts
+activeCalls(): bigint[]                       // marked ids of all active calls
+getCall(chat: ChatRef): ActiveCall | null     // sync; numeric id or previously-resolved alias
+isActive(chat: ChatRef): boolean              // sync; same alias rules
+resolveChatId(chat: ChatRef): Promise<bigint> // username / t.me link / id → marked id
+```
+
+#### Events
+
+```ts
+on<K extends keyof TgCallsEvents>(event: K, handler: TgCallsEvents[K]): void
+```
+
+Last registration wins per event. Registering `streamEnd` suppresses auto-leave.
+
+## Types
+
+### `ChatRef`
+
+```ts
+type ChatRef = string | number | bigint;
+```
+
+Async methods accept a marked id (`-100…`), `@username`, or `t.me` link. Sync
+`getCall()` / `isActive()` accept numeric ids or aliases previously resolved by this
+client. `activeCalls()` always returns marked ids.
+
+### `AudioSource`
+
+```ts
+type AudioSource =
+  | { kind: 'file'; path: string }
+  | { kind: 'url'; url: string; audioUrl?: string }
+  | { kind: 'shell'; command: string };
+```
+
+### `JoinOptions`
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `muted` | `boolean` | `false` | join with microphone muted |
+| `autoLeave` | `boolean` | `true` | leave when the audio stream ends (suppressed by a `streamEnd` handler) |
+| `allowCreate` | `boolean` | `false` | create a missing voice chat (requires admin rights) |
+| `inviteHash` | `string` | — | invite hash when joining via a call invite link |
+| `video` | `VideoOptions \| false` | — | share video from the same source |
+| `presentation` | `boolean` | `false` | use the presentation channel for this call |
+
+### `VideoOptions`
+
+| Field | Type | Default |
+|---|---|---|
+| `width` | `number` | probed / 640 |
+| `height` | `number` | probed / 360 |
+| `fps` | `number` | probed / 25 |
+| `adjustByHeight` | `boolean` | `true` |
+
+### `VideoQuality` (presets)
+
+```ts
+VideoQuality.UHD_4K   // { width: 3840, height: 2160, fps: 60 }
+VideoQuality.QHD_2K   // { width: 2560, height: 1440, fps: 60 }
+VideoQuality.FHD_1080p// { width: 1920, height: 1080, fps: 60 }
+VideoQuality.HD_720p  // { width: 1280, height: 720,  fps: 30 }
+VideoQuality.SD_480p  // { width: 854,  height: 480,  fps: 30 }
+VideoQuality.SD_360p  // { width: 640,  height: 360,  fps: 30 }
+```
+
+### `JoinResult`
+
+```ts
+interface JoinResult { chatId: bigint; call: unknown; ssrc: number; }
+```
+
+### `ActiveCall`
+
+```ts
+interface ActiveCall {
+  chatId: bigint; call: unknown; ssrc: number; source: AudioSource;
+  videoActive: boolean; presentationActive: boolean;
+  muted: boolean; autoLeave: boolean; joinedAt: number;
+}
+```
+
+### `StreamEndInfo`
+
+```ts
+interface StreamEndInfo {
+  chatId: bigint;
+  source: AudioSource | null;
+  willAutoLeave: boolean; // true when no streamEnd handler is registered and autoLeave is on
+}
+```
+
+### `TgCallsEvents`
+
+```ts
+interface TgCallsEvents {
+  streamEnd: (info: StreamEndInfo) => void | Promise<void>;
+  connectionChange: (chatId: bigint, state: ConnectionState) => void | Promise<void>;
+  update: (update: unknown) => void | Promise<void>;
+}
+```
+
+`ConnectionState` is a numeric enum (from ntgcalls): `CONNECTING=1`, `CONNECTED=2`,
+`FAILED=4`, `TIMEOUT=8`, `CLOSED=16`.
+
+## Errors
+
+All extend `TgCallsError` (which extends `Error`); `error.name` is the class name.
+
+| Class | Extra | Thrown when |
+|---|---|---|
+| `TgCallsError` | — | base class for all library errors |
+| `AlreadyInCallError` | `chatId: bigint` | `join`/`joinIdle` while already in a call (or mid-join) in that chat |
+| `NoVoiceChatError` | — | no active voice chat and `allowCreate` not set |
+| `UnrecognizedClientError` | — | the `client` is neither GramJS-family, mtcute, nor an adapter |
+
+## Adapters
+
+```ts
+class GramjsAdapter implements MTProtoAdapter { constructor(client: MTProtoLike, opts?: { Api?: unknown }) }
+class MtcuteAdapter implements MTProtoAdapter { constructor(client: MtcuteLike) }
+function createAdapter(client: SupportedClient, opts?: { Api?: unknown }): MTProtoAdapter
+function isAdapter(client: unknown): client is MTProtoAdapter
+function isMtcuteClient(client: unknown): client is MtcuteLike
+function isGramjsClient(client: unknown): client is MTProtoLike
+```
+
+`MTProtoAdapter` interface: `resolveChatId`, `getGroupCall`, `joinGroupCall`,
+`leaveGroupCall`, `joinPresentationCall`, `leavePresentationCall`,
+`extractConnectionParams`, `installUpdateHandler`, optional `dispose`.
+
+## Media helpers
+
+```ts
+pcmCommand(source: AudioSource, opts: TgCallsOptions): string
+audioDescription(source: AudioSource, opts: TgCallsOptions): object
+videoDescription(source, video: VideoOptions, opts): object
+probeVideo(filePathOrUrl: string, opts, target?: VideoOptions): Promise<{width,height,fps}>
+resolveYouTube(url: string, opts, video?: boolean): Promise<string | null>
+resolveYouTubeStreams(url: string, opts, maxHeight?: number): Promise<{ url: string; audioUrl?: string } | null>
+```
+
+## TL helpers
+
+```ts
+loadTl(provided?: unknown): AnyApi   // resolve/cache the raw TL namespace (telegram → teleproto)
+resetTlCache(): void
+loadEvents(...): unknown
+```

@@ -1,0 +1,919 @@
+# tgcalls-js — full documentation (llms-full.txt)
+# Generated concatenation of README + docs for bulk LLM ingestion.
+# Version 0.3.1. Source of truth: the individual files in this repo.
+
+
+
+==============================================================================
+== Overview & quick start  (README.md)
+==============================================================================
+
+# tgcalls-js
+
+**pytgcalls-style Telegram group-call wrapper for Node.js.** Stream audio, video,
+and screen shares into Telegram voice chats using a GramJS-family client
+([`teleproto`](https://www.npmjs.com/package/teleproto) / `telegram`) or
+[`mtcute`](https://www.npmjs.com/package/@mtcute/node), on top of the official
+[`ntgcalls`](https://www.npmjs.com/package/ntgcalls) native binding (the C++ WebRTC
+core by the pytgcalls team — prebuilt binaries, no compiling).
+
+[![Release](https://img.shields.io/github/v/release/kotakbiasa/tgcalls-js)](https://github.com/kotakbiasa/tgcalls-js/releases)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
+> **Status: v0.3.1** — audio + video + presentation + idle presence + mtcute.
+> Verified end-to-end against live Telegram voice chats (audio, video up to
+> 1080p60, and 40-minute idle presence) on Node 20+.
+
+## Features
+
+- 🎵 **Audio** from a file, direct URL, YouTube (via yt-dlp), or a custom shell PCM pipe.
+- 🎬 **Video** from the same source (`video: {width, height, fps}`), camera or presentation channel.
+- 🖥️ **Screen share** via `startPresentation()` / `stopPresentation()`.
+- 🧍 **Idle presence** via `joinIdle()` — stay in a call with no media (stable on UDP-capable hosts).
+- 🔌 **Client-agnostic** — auto-detects teleproto / GramJS / mtcute, or bring your own `MTProtoAdapter`.
+- 🧯 **Typed errors**, injectable `logger`, queue-friendly `setSource()`, clean lifecycle (`leave` / `dispose`).
+- ✅ **Offline test suite** — fake MTProto + the real ntgcalls native core, no Telegram credentials needed.
+
+## Install
+
+```bash
+# npm publish is pending — install from the git repo (pin a tag for stability):
+npm install github:kotakbiasa/tgcalls-js#v0.3.1
+```
+
+Requirements:
+
+- **Node.js ≥ 18** (tested on 20 / 22).
+- **ffmpeg** on `PATH` — required for every audio/video source.
+- **yt-dlp** on `PATH` — only if you use `joinYouTube()`.
+- A **user account** session (StringSession / mtcute storage). **Bots cannot join voice chats.**
+
+`ntgcalls` ships prebuilt binaries for Linux x64/arm64, macOS arm64, and Windows x64.
+If install skips the platform binary, see [Troubleshooting](docs/troubleshooting.md).
+
+## Quick start
+
+### teleproto / GramJS
+
+```js
+import { TelegramClient } from 'teleproto';
+import { StringSession } from 'teleproto/sessions/index.js';
+import { TgCallsClient } from 'tgcalls-js';
+
+const client = new TelegramClient(new StringSession(SESSION), API_ID, API_HASH, {});
+await client.connect();
+
+const tg = new TgCallsClient({ client });
+await tg.join(-1001234567890, { kind: 'file', path: './song.mp3' });
+// streaming… auto-leaves when the track ends (autoLeave defaults to true)
+```
+
+> The archived `telegram` package works identically — just change the two import
+> specifiers back to `telegram` / `telegram/sessions/index.js`.
+
+### mtcute
+
+```js
+import { TelegramClient } from '@mtcute/node';
+import { TgCallsClient } from 'tgcalls-js';
+
+const client = new TelegramClient({ apiId: API_ID, apiHash: API_HASH, storage: 'account.session' });
+await client.start();
+
+const tg = new TgCallsClient({ client }); // client type auto-detected
+await tg.join(-1001234567890, { kind: 'file', path: './song.mp3' });
+```
+
+### Video, YouTube, URL, shell
+
+```js
+// Video from the same file (camera channel)
+await tg.join(chatId, { kind: 'file', path: './clip.mp4' }, {
+  video: { width: 854, height: 480, fps: 30 },
+});
+
+// Screen share (presentation channel)
+await tg.join(chatId, { kind: 'file', path: './clip.mp4' }, {
+  video: { width: 1280, height: 720, fps: 30 }, presentation: true,
+});
+
+// YouTube / any yt-dlp-supported site
+await tg.joinYouTube(chatId, 'https://youtube.com/watch?v=…');
+
+// Direct URL (radio stream, mp3, m3u8, …)
+await tg.join(chatId, { kind: 'url', url: 'https://example.com/stream.mp3' });
+
+// Custom shell command piping s16le 48 kHz stereo PCM to stdout
+await tg.join(chatId, {
+  kind: 'shell',
+  command: 'ffmpeg -i song.flac -loglevel panic -f s16le -ac 2 -ar 48000 pipe:1',
+});
+```
+
+### Events
+
+```js
+tg.on('streamEnd', async ({ chatId, source, willAutoLeave }) => {
+  // play the next track without leaving:
+  await tg.setSource(chatId, { kind: 'file', path: './next.mp3' });
+});
+tg.on('connectionChange', (chatId, state) => { /* numeric ConnectionState */ });
+```
+
+## Documentation
+
+| Doc | Contents |
+|---|---|
+| [Getting started](docs/getting-started.md) | Install, requirements, login, first stream |
+| [Guide](docs/guide.md) | Sources, video, presentation, idle, queue, adapters, join flow |
+| [API reference](docs/api.md) | Every method, option, type, event, and error |
+| [Troubleshooting](docs/troubleshooting.md) | Native binary, ffmpeg, UDP/RTMP, YouTube, 2FA |
+
+**For AI agents / LLM tooling:** [`llms.txt`](llms.txt) (concise index) and
+[`llms-full.txt`](llms-full.txt) (full documentation in one file).
+Coding agents working on this repo: see [`AGENTS.md`](AGENTS.md).
+
+## API at a glance
+
+| Method | Description |
+|---|---|
+| `join(chat, source, opts?)` | Join a voice chat and stream a source |
+| `joinYouTube(chat, url, opts?)` | Resolve via yt-dlp, then `join` |
+| `joinIdle(chat, opts?)` | Join with no media (idle presence) |
+| `startPresentation(chat, source, video?)` / `stopPresentation(chat)` | Screen-share channel |
+| `setSource(chat, source)` | Swap the audio of an active call (queue) |
+| `pause / resume / mute / unmute(chat)` | Native media controls |
+| `time(chat)` | Seconds streamed |
+| `leave(chat)` / `dispose()` | Leave one call / tear down everything |
+| `activeCalls() / getCall(chat) / isActive(chat)` | Introspection |
+| `resolveChatId(chat)` | username / t.me link / id → marked id |
+| `on(event, cb)` | `streamEnd`, `connectionChange`, `update` |
+
+Full signatures and types: [API reference](docs/api.md).
+
+## How it works
+
+```
+channels.getFullChannel ──► full_chat.call (InputGroupCall)
+ntgcalls.createCall ──────► native join params (JSON: ufrag/pwd/fp/ssrc)
+ntgcalls.setStreamSources ─ ffmpeg/yt-dlp PCM source (SHELL)
+phone.joinGroupCall ──────► UpdateGroupCallConnection.params (connect JSON)
+ntgcalls.connect ─────────► WebRTC → Telegram media servers
+```
+
+Telegram's connect params are passed to the native core verbatim. The audio SSRC
+used for `phone.leaveGroupCall` comes from the join params produced by
+`ntgcalls.createCall`.
+
+## Caveats
+
+- `ntgcalls` is pinned to an exact `3.0.x` (currently `3.0.6`); the 3.x line is young and may shift upstream.
+- Using `telegram` **and** `teleproto` in one process? Pass the matching `Api` namespace to each `TgCallsClient`. mtcute uses its own TL schema and needs no `Api`.
+- `process.exit()` immediately after using the native lib can abort during WebRTC teardown (cosmetic; long-running bots are unaffected). `await tg.dispose()` first.
+- Presentation requires an RTC connection — unavailable on UDP-blocked hosts in RTMP/STREAM mode.
+
+## Development
+
+```bash
+npm install
+npm run build          # tsc → dist/
+npm run typecheck:all  # src + examples + test
+npm test               # offline suite (no credentials)
+npm run smoke          # verify dist exports
+```
+
+See [`AGENTS.md`](AGENTS.md) for conventions and pitfalls.
+
+## License
+
+MIT for this wrapper. [`ntgcalls`](https://github.com/pytgcalls/ntgcalls) is
+LGPL-3.0 (its own repo, installed as a dependency).
+
+
+
+==============================================================================
+== Getting started  (docs/getting-started.md)
+==============================================================================
+
+# Getting started
+
+## Requirements
+
+| Need | Why |
+|---|---|
+| Node.js ≥ 18 | runtime (tested on 20 / 22) |
+| `ffmpeg` on PATH | decodes every audio/video source to PCM/rawvideo |
+| `yt-dlp` on PATH | only for `joinYouTube()` / `resolveYouTube()` |
+| A **user** account session | Telegram does not allow bots to join voice chats |
+| `api_id` / `api_hash` | from <https://my.telegram.org> |
+
+Install ffmpeg:
+
+```bash
+sudo apt-get install ffmpeg        # Debian/Ubuntu
+brew install ffmpeg yt-dlp         # macOS
+```
+
+## Install the package
+
+```bash
+npm install github:kotakbiasa/tgcalls-js#v0.3.1
+```
+
+`ntgcalls` provides prebuilt native binaries (Linux x64/arm64, macOS arm64,
+Windows x64). If your npm version skips the platform binary when installing from
+a git URL, install it manually — see [Troubleshooting](troubleshooting.md).
+
+## Get a user session
+
+You need a logged-in **user** client. Two common paths:
+
+### teleproto / GramJS (StringSession)
+
+```js
+import { TelegramClient } from 'teleproto';
+import { StringSession } from 'teleproto/sessions/index.js';
+
+const client = new TelegramClient(new StringSession(''), API_ID, API_HASH, {});
+await client.start({
+  phoneNumber: async () => '+62…',
+  phoneCode:   async () => /* code from the Telegram app */,
+  password:    async () => /* 2FA password if enabled */,
+});
+const sessionString = client.session.save(); // store this securely, reuse later
+```
+
+Reuse it next time with `new StringSession(sessionString)` + `await client.connect()`.
+
+### mtcute
+
+```js
+import { TelegramClient } from '@mtcute/node';
+const client = new TelegramClient({ apiId: API_ID, apiHash: API_HASH, storage: 'account.session' });
+await client.start({ phone: () => '+62…', code: () => /* … */, password: () => /* … */ });
+```
+
+> Keep session strings and 2FA passwords secret (e.g. a `chmod 600` file or a
+> secrets manager). Never commit them.
+
+## First stream
+
+```js
+import { TgCallsClient } from 'tgcalls-js';
+
+const tg = new TgCallsClient({ client });
+
+tg.on('connectionChange', (chatId, state) => console.log('state:', state));
+tg.on('streamEnd', ({ chatId }) => console.log('track finished in', chatId));
+
+// chat accepts a marked id (-100…), @username, or t.me link
+await tg.join(-1001234567890, { kind: 'file', path: './song.mp3' });
+```
+
+The call auto-leaves when the track ends (`autoLeave` defaults to `true`). To keep
+the call open and queue more tracks, set `autoLeave: false` and use `setSource()`
+inside `streamEnd`.
+
+## Verify your setup (no credentials)
+
+```bash
+npm test     # offline suite: fake MTProto + real ntgcalls core
+npm run smoke
+```
+
+Next: the [Guide](guide.md) for video, presentation, idle, and adapters, or the
+[API reference](api.md).
+
+
+
+==============================================================================
+== Guide  (docs/guide.md)
+==============================================================================
+
+# Guide
+
+## The join flow
+
+Every join follows the same ordered sequence (do not reorder it):
+
+1. `channels.getFullChannel` (or `messages.getFullChat` for basic groups) → `fullChat.call` (InputGroupCall).
+2. `ntgcalls.createCall(chatId)` → native join params JSON (contains the **ssrc**).
+3. `ntgcalls.setStreamSources(chatId, CAPTURE, …)` — set media **before** the MTProto join so it flows immediately.
+4. `phone.joinGroupCall(params)` → wait for `UpdateGroupCallConnection`.
+5. `ntgcalls.connect(chatId, connParams)` → media starts.
+
+The same join-params string is sent in `JoinGroupCall`, and its ssrc is reused for
+`LeaveGroupCall`. The library handles all of this; you only call `join()`.
+
+## Sources
+
+`AudioSource` is one of:
+
+```ts
+{ kind: 'file'; path: string }                 // any ffmpeg-readable file
+{ kind: 'url'; url: string; audioUrl?: string } // direct media URL; audioUrl for split video/audio
+{ kind: 'shell'; command: string }              // command piping s16le 48kHz stereo PCM to stdout
+```
+
+- **file / url** are decoded by ffmpeg to PCM (`-f s16le -ac 2 -ar 48000 pipe:1`).
+- **shell** gives you full control; the command must output raw PCM at 48 kHz stereo.
+- `joinYouTube()` resolves a page URL to a direct media URL via yt-dlp, then joins.
+  With video it requests separate `bestvideo + bestaudio` streams (`audioUrl` carries the audio).
+
+## Video
+
+Pass `video` to `join()` to stream video from the same file/URL:
+
+```js
+await tg.join(chatId, { kind: 'file', path: './clip.mp4' }, {
+  video: { width: 854, height: 480, fps: 30 },
+});
+```
+
+- Dimensions are probed and kept **even** (YUV420p requirement); scaling is proportional.
+- `video: false` disables video; omitting it streams audio only.
+- Start at 854×480@30 on small VPS; raise to 720p60 / 1080p60 if the host keeps up
+  (verified stable on a 4-vCPU cloud VM).
+- For YouTube video, prefer `vp9`/`avc1` over AV1 (AV1 is too heavy to decode in real time).
+
+### Camera vs presentation
+
+- `video` alone → **camera** channel.
+- `presentation: true` (or `startPresentation()`) → **screen-share** channel.
+- Camera and screen **cannot be active at the same time** in one call; starting a
+  presentation replaces the camera channel.
+
+```js
+await tg.startPresentation(chatId, { kind: 'file', path: './slides.mp4' }, { width: 1280, height: 720 });
+await tg.stopPresentation(chatId); // call stays, camera can resume
+```
+
+> `setStreamSources` **replaces** all devices: any device omitted from a description
+> is dropped. The library rebuilds the video channel on `setSource()` so video is not
+> silently lost when you swap audio.
+
+## Idle presence
+
+`joinIdle()` joins with no media — useful for a bot that waits in a voice chat:
+
+```js
+await tg.joinIdle(chatId, { autoLeave: false });
+```
+
+- On UDP-capable hosts this is stable indefinitely (verified: **40+ minutes**, no disconnect).
+- On UDP-blocked hosts, a regular RTC join gets ICE-timeout-kicked after ~25s. With
+  `allowCreate: true`, `joinIdle()` creates a missing call in **RTMP-stream** mode and
+  joins muted; an existing call is not converted.
+
+## Queue / swapping tracks
+
+```js
+const tg = new TgCallsClient({ client });
+tg.on('streamEnd', async ({ chatId }) => {
+  const next = queue.shift();
+  if (next) await tg.setSource(chatId, next); // swap without leaving
+});
+await tg.join(chatId, first, { autoLeave: false });
+```
+
+`setSource()` keeps the video channel intact. With `autoLeave: true` and **no**
+`streamEnd` handler registered, the call auto-leaves when the stream ends.
+
+## Events
+
+| Event | Payload | Notes |
+|---|---|---|
+| `streamEnd` | `{ chatId, source, willAutoLeave }` | fires once per playback; with video, waits for both audio and video to end |
+| `connectionChange` | `(chatId, state)` | `state` is a numeric `ConnectionState` (see below) |
+| `update` | raw TL update | pass-through of group-call-related updates |
+
+`ConnectionState` (numeric enum from ntgcalls):
+
+| Value | Meaning |
+|---|---|
+| 1 | CONNECTING |
+| 2 | CONNECTED |
+| 4 | FAILED |
+| 8 | TIMEOUT |
+| 16 | CLOSED |
+
+A handler that throws/rejects is logged (via the `logger` option) and never crashes
+the process. Registering a `streamEnd` handler suppresses auto-leave.
+
+## Adapters / client detection
+
+`TgCallsClient` auto-detects the client:
+
+- **mtcute** — has `.call` + `.onRawUpdate.add` → `MtcuteAdapter`.
+- **GramJS / teleproto** — has `.invoke` → `GramjsAdapter`.
+- **custom** — pass an object implementing `MTProtoAdapter` (`isAdapter: true`).
+
+```js
+import { GramjsAdapter, MtcuteAdapter, createAdapter } from 'tgcalls-js';
+const adapter = createAdapter(client, { Api }); // or new GramjsAdapter(client, { Api })
+const tg = new TgCallsClient({ client: adapter });
+```
+
+When mixing `telegram` and `teleproto` in one process, pass the matching `Api`
+namespace per client to avoid ambiguous TL auto-detection. mtcute needs no `Api`.
+
+> mtcute TL `Long` objects (low/high) are preserved **by reference** — do not convert
+> them to JS bigint. GramJS/teleproto use plain bigint.
+
+## Lifecycle & cleanup
+
+- `leave(chat)` stops the native call and sends `LeaveGroupCall` (best-effort both).
+- A failed `join()` cleans up the native call and leaves any zombie participant.
+- On native `CLOSED`/`FAILED`, the library leaves via MTProto **before** notifying
+  listeners, so you can safely destroy the MTProto client from the callback.
+- `await tg.dispose()` before disposing the MTProto client; avoid `process.exit()`
+  immediately after native use (WebRTC teardown can abort).
+
+## Typed errors
+
+```js
+import { AlreadyInCallError, NoVoiceChatError, TgCallsError } from 'tgcalls-js';
+try {
+  await tg.join(chatId, src);
+} catch (e) {
+  if (e instanceof AlreadyInCallError) console.log('busy in', e.chatId);
+  else if (e instanceof NoVoiceChatError) console.log('start a voice chat first');
+}
+```
+
+All library errors extend `TgCallsError` (which extends `Error`). See the
+[API reference](api.md#errors).
+
+
+
+==============================================================================
+== API reference  (docs/api.md)
+==============================================================================
+
+# API reference
+
+All exports come from the package root (`import … from 'tgcalls-js'`).
+
+## `TgCallsClient`
+
+### Constructor
+
+```ts
+new TgCallsClient(options: TgCallsOptions)
+```
+
+#### `TgCallsOptions`
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `client` | `MTProtoLike \| MtcuteLike \| MTProtoAdapter` | — | teleproto/GramJS client, mtcute client, or a custom adapter |
+| `Api` | `unknown` | auto | TL API namespace; pass per client when mixing `telegram` + `teleproto` |
+| `ffmpegPath` | `string` | `"ffmpeg"` | ffmpeg binary |
+| `ffprobePath` | `string` | `"ffprobe"` | ffprobe binary |
+| `ytDlpPath` | `string` | `"yt-dlp"` | yt-dlp binary |
+| `logger` | `{ error(...args: unknown[]): void }` | `console.error` | sink for internal warnings (e.g. a throwing event handler) |
+
+### Properties
+
+| Property | Type | Description |
+|---|---|---|
+| `ntg` | `NTgCalls` | the underlying native instance (advanced use) |
+
+### Methods
+
+#### Joining
+
+```ts
+join(chat: ChatRef, source: AudioSource, options?: JoinOptions): Promise<JoinResult>
+joinYouTube(chat: ChatRef, url: string, options?: JoinOptions): Promise<JoinResult>
+joinIdle(chat: ChatRef, options?: JoinOptions): Promise<JoinResult>
+resolveYouTube(url: string, video?: boolean): Promise<string | null>
+```
+
+- `join` — join the voice chat and stream `source`. Throws `AlreadyInCallError` if
+  already in a call (or mid-join) in that chat.
+- `joinYouTube` — resolve `url` via yt-dlp, then `join`.
+- `joinIdle` — join with no media. With `allowCreate: true`, creates a missing call
+  in RTMP-stream mode (for UDP-blocked hosts); an existing call is not converted.
+  Throws `NoVoiceChatError` if there is no call and `allowCreate` is not set.
+- `resolveYouTube` — resolve a page URL to a direct media URL (or `null`).
+
+#### Presentation (screen share)
+
+```ts
+startPresentation(chat: ChatRef, source: Exclude<AudioSource, {kind:'shell'}>, video?: VideoOptions): Promise<void>
+stopPresentation(chat: ChatRef): Promise<void>
+```
+
+`startPresentation` joins the presentation channel with a file/url video source
+(replaces the camera channel). `stopPresentation` leaves the presentation channel;
+the call stays.
+
+#### Playback control
+
+```ts
+setSource(chat: ChatRef, source: AudioSource): Promise<void>  // swap audio, keep video (queue)
+pause(chat: ChatRef): Promise<boolean>
+resume(chat: ChatRef): Promise<boolean>
+mute(chat: ChatRef): Promise<boolean>
+unmute(chat: ChatRef): Promise<boolean>
+time(chat: ChatRef): Promise<number>                          // seconds streamed
+```
+
+#### Lifecycle
+
+```ts
+leave(chat: ChatRef): Promise<void>   // ntgcalls.stop + phone.leaveGroupCall (best-effort)
+dispose(): Promise<void>              // stop all calls + detach update handlers; await before disposing the MTProto client
+```
+
+#### Introspection
+
+```ts
+activeCalls(): bigint[]                       // marked ids of all active calls
+getCall(chat: ChatRef): ActiveCall | null     // sync; numeric id or previously-resolved alias
+isActive(chat: ChatRef): boolean              // sync; same alias rules
+resolveChatId(chat: ChatRef): Promise<bigint> // username / t.me link / id → marked id
+```
+
+#### Events
+
+```ts
+on<K extends keyof TgCallsEvents>(event: K, handler: TgCallsEvents[K]): void
+```
+
+Last registration wins per event. Registering `streamEnd` suppresses auto-leave.
+
+## Types
+
+### `ChatRef`
+
+```ts
+type ChatRef = string | number | bigint;
+```
+
+Async methods accept a marked id (`-100…`), `@username`, or `t.me` link. Sync
+`getCall()` / `isActive()` accept numeric ids or aliases previously resolved by this
+client. `activeCalls()` always returns marked ids.
+
+### `AudioSource`
+
+```ts
+type AudioSource =
+  | { kind: 'file'; path: string }
+  | { kind: 'url'; url: string; audioUrl?: string }
+  | { kind: 'shell'; command: string };
+```
+
+### `JoinOptions`
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `muted` | `boolean` | `false` | join with microphone muted |
+| `autoLeave` | `boolean` | `true` | leave when the audio stream ends (suppressed by a `streamEnd` handler) |
+| `allowCreate` | `boolean` | `false` | create a missing voice chat (requires admin rights) |
+| `inviteHash` | `string` | — | invite hash when joining via a call invite link |
+| `video` | `VideoOptions \| false` | — | share video from the same source |
+| `presentation` | `boolean` | `false` | use the presentation channel for this call |
+
+### `VideoOptions`
+
+| Field | Type | Default |
+|---|---|---|
+| `width` | `number` | probed / 640 |
+| `height` | `number` | probed / 360 |
+| `fps` | `number` | probed / 25 |
+| `adjustByHeight` | `boolean` | `true` |
+
+### `VideoQuality` (presets)
+
+```ts
+VideoQuality.UHD_4K   // { width: 3840, height: 2160, fps: 60 }
+VideoQuality.QHD_2K   // { width: 2560, height: 1440, fps: 60 }
+VideoQuality.FHD_1080p// { width: 1920, height: 1080, fps: 60 }
+VideoQuality.HD_720p  // { width: 1280, height: 720,  fps: 30 }
+VideoQuality.SD_480p  // { width: 854,  height: 480,  fps: 30 }
+VideoQuality.SD_360p  // { width: 640,  height: 360,  fps: 30 }
+```
+
+### `JoinResult`
+
+```ts
+interface JoinResult { chatId: bigint; call: unknown; ssrc: number; }
+```
+
+### `ActiveCall`
+
+```ts
+interface ActiveCall {
+  chatId: bigint; call: unknown; ssrc: number; source: AudioSource;
+  videoActive: boolean; presentationActive: boolean;
+  muted: boolean; autoLeave: boolean; joinedAt: number;
+}
+```
+
+### `StreamEndInfo`
+
+```ts
+interface StreamEndInfo {
+  chatId: bigint;
+  source: AudioSource | null;
+  willAutoLeave: boolean; // true when no streamEnd handler is registered and autoLeave is on
+}
+```
+
+### `TgCallsEvents`
+
+```ts
+interface TgCallsEvents {
+  streamEnd: (info: StreamEndInfo) => void | Promise<void>;
+  connectionChange: (chatId: bigint, state: ConnectionState) => void | Promise<void>;
+  update: (update: unknown) => void | Promise<void>;
+}
+```
+
+`ConnectionState` is a numeric enum (from ntgcalls): `CONNECTING=1`, `CONNECTED=2`,
+`FAILED=4`, `TIMEOUT=8`, `CLOSED=16`.
+
+## Errors
+
+All extend `TgCallsError` (which extends `Error`); `error.name` is the class name.
+
+| Class | Extra | Thrown when |
+|---|---|---|
+| `TgCallsError` | — | base class for all library errors |
+| `AlreadyInCallError` | `chatId: bigint` | `join`/`joinIdle` while already in a call (or mid-join) in that chat |
+| `NoVoiceChatError` | — | no active voice chat and `allowCreate` not set |
+| `UnrecognizedClientError` | — | the `client` is neither GramJS-family, mtcute, nor an adapter |
+
+## Adapters
+
+```ts
+class GramjsAdapter implements MTProtoAdapter { constructor(client: MTProtoLike, opts?: { Api?: unknown }) }
+class MtcuteAdapter implements MTProtoAdapter { constructor(client: MtcuteLike) }
+function createAdapter(client: SupportedClient, opts?: { Api?: unknown }): MTProtoAdapter
+function isAdapter(client: unknown): client is MTProtoAdapter
+function isMtcuteClient(client: unknown): client is MtcuteLike
+function isGramjsClient(client: unknown): client is MTProtoLike
+```
+
+`MTProtoAdapter` interface: `resolveChatId`, `getGroupCall`, `joinGroupCall`,
+`leaveGroupCall`, `joinPresentationCall`, `leavePresentationCall`,
+`extractConnectionParams`, `installUpdateHandler`, optional `dispose`.
+
+## Media helpers
+
+```ts
+pcmCommand(source: AudioSource, opts: TgCallsOptions): string
+audioDescription(source: AudioSource, opts: TgCallsOptions): object
+videoDescription(source, video: VideoOptions, opts): object
+probeVideo(filePathOrUrl: string, opts, target?: VideoOptions): Promise<{width,height,fps}>
+resolveYouTube(url: string, opts, video?: boolean): Promise<string | null>
+resolveYouTubeStreams(url: string, opts, maxHeight?: number): Promise<{ url: string; audioUrl?: string } | null>
+```
+
+## TL helpers
+
+```ts
+loadTl(provided?: unknown): AnyApi   // resolve/cache the raw TL namespace (telegram → teleproto)
+resetTlCache(): void
+loadEvents(...): unknown
+```
+
+
+
+==============================================================================
+== Troubleshooting  (docs/troubleshooting.md)
+==============================================================================
+
+# Troubleshooting
+
+## `Error: ntgcalls: no prebuilt binary for linux-x64`
+
+Some npm versions (seen with **npm 12 installing from a git URL**) skip `ntgcalls`'
+platform-specific optional dependency. Install it yourself, matching the `ntgcalls`
+version in `package.json` (currently `3.0.6`):
+
+```bash
+npm install @ntgcalls/linux-x64@3.0.6 --no-save
+```
+
+Use the matching package on other platforms:
+
+| Platform | Package |
+|---|---|
+| Linux x64 | `@ntgcalls/linux-x64` |
+| Linux arm64 | `@ntgcalls/linux-arm64` |
+| macOS arm64 | `@ntgcalls/darwin-arm64` |
+| Windows x64 | `@ntgcalls/win32-x64` |
+
+Installing from the npm registry (once published) resolves optional dependencies
+normally and avoids this entirely. npm 10 (e.g. on many cloud images) installs the
+binary correctly from a git URL.
+
+## `default_launcher: No such file or directory (vfork_launcher)`
+
+This confusing error from the native core almost always means **ffmpeg is not on
+PATH**. ntgcalls spawns ffmpeg per source; without it you get a boost process-launch
+ENOENT instead of a clear "ffmpeg not found".
+
+```bash
+sudo apt-get install ffmpeg     # Debian/Ubuntu
+brew install ffmpeg             # macOS
+ffmpeg -version                 # verify it resolves
+```
+
+The test suite now fails fast with a clear message if ffmpeg is missing.
+
+## Join fails / kicked after ~25 seconds
+
+On **UDP-blocked hosts** (some VPS/firewalls), a regular RTC join gets an ICE timeout
+and Telegram kicks the participant after ~25s. Options:
+
+- Use `joinIdle(chat, { allowCreate: true })` — creates the call in **RTMP-stream**
+  mode and joins muted (no local media path needed). Existing calls are not converted.
+- Presentation/screen share requires RTC and is **unavailable** in RTMP/STREAM mode.
+- On UDP-capable hosts (verified on InstaBox/AWS), normal RTC joins and idle presence
+  are stable indefinitely (40+ minutes tested).
+
+Check outbound UDP:
+
+```bash
+timeout 5 bash -c 'exec 3<>/dev/udp/stun.l.google.com/19302' && echo "UDP OK"
+```
+
+## `NoVoiceChatError`
+
+There is no active voice chat in the target chat. Start one manually, or pass
+`allowCreate: true` (the account needs admin rights to create a call).
+
+## `AlreadyInCallError`
+
+You called `join`/`joinIdle` while already in a call (or mid-join) in that chat.
+`leave(chat)` first. The error carries `chatId`.
+
+## YouTube: "Sign in to confirm you're not a bot"
+
+YouTube blocks **datacenter IPs** (cloud VMs) across all player clients. Fixes:
+
+- **Cookies** from a logged-in browser (Netscape format):
+  ```bash
+  yt-dlp --cookies cookies.txt --js-runtimes node -f "bestvideo[vcodec~='^(vp09|avc1)']+bestaudio[ext=m4a]/best" URL
+  ```
+  Treat cookies as account credentials: store `chmod 600`, never log them, delete/rotate after use.
+- A recent **yt-dlp** and a JS runtime (`--js-runtimes node` or deno) — extraction
+  without a JS runtime is deprecated and may miss formats.
+- Prefer `vp9`/`avc1` over AV1 for video (AV1 is too heavy to decode in real time on small VPS).
+- Fallback: download from a residential IP, then transfer the file to the cloud host.
+
+## Login / 2FA (teleproto)
+
+- `client.start()` probes `updates.getState()`, which throws `AUTH_KEY_UNREGISTERED`
+  on an empty session. For QR login use `client.signInUserWithQrCode(...)` directly;
+  the QR token is a Buffer — encode `tg://login?token=<base64url>` for the QR image.
+- For phone login, provide `phoneNumber`, `phoneCode`, and `password` (2FA) callbacks.
+- Keep the resulting StringSession secret; reuse it with `new StringSession(str)` +
+  `client.connect()`.
+
+## Process aborts on exit
+
+`process.exit()` immediately after native use can abort during WebRTC teardown
+(cosmetic). `await tg.dispose()` and let queued callbacks drain before exiting;
+long-running bots are unaffected.
+
+## Mixing `telegram` and `teleproto`
+
+Pass the matching `Api` namespace to each `TgCallsClient` to avoid ambiguous TL
+auto-detection. mtcute uses its own TL schema and needs no `Api`.
+
+
+
+==============================================================================
+== Agent/contributor guidance  (AGENTS.md)
+==============================================================================
+
+# AGENTS.md
+
+Guidance for coding agents working on **tgcalls-js**.
+
+## What this is
+
+A TypeScript wrapper (`src/`) around the `ntgcalls` native binding that streams
+audio/video into Telegram voice chats via a GramJS-family or mtcute MTProto client.
+ESM (`"type": "module"`), strict TypeScript, Node ≥ 18.
+
+## Commands
+
+```bash
+npm install            # npm 11+ may warn "install scripts blocked" for esbuild — cosmetic
+npm run build          # tsc → dist/
+npm run typecheck:all  # tsc -p tsconfig.all.json (src + examples + test)
+npm test               # tsx test/run.ts — offline suite, NO Telegram credentials
+npm run smoke          # node smoke.mjs — verify dist/index.js exports
+```
+
+CI without GitHub Actions: `scripts/ci.sh` (npm ci → build → typecheck:all → test →
+smoke; `--fresh [ref]` clones pristine first). GitHub Actions may be disabled at the
+account level — prefer `scripts/ci.sh` for verification.
+
+## Hard rules
+
+- **Never run live joins without an explicit user-account session and permission.**
+  Bots cannot join voice chats. The offline test suite is the default verification path.
+- The offline suite uses a **fake MTProto client + the real ntgcalls native core** — it
+  proves protocol plumbing (ssrc round-trip, cleanup, races, dispose) without login.
+- `ffmpeg` must be on PATH to run `npm test`; the suite fails fast with a clear message
+  if it is missing.
+
+## Native binary pitfall
+
+`npm install` from a git URL on some npm versions (e.g. npm 12) skips the optional
+`@ntgcalls/linux-x64` package → `Error: ntgcalls: no prebuilt binary for linux-x64`.
+Fix: `npm install @ntgcalls/linux-x64@3.0.6 --no-save` (match the `ntgcalls` version).
+
+## Domain pitfalls (do not regress these)
+
+- Join order is fixed: getFullChannel → createCall → setStreamSources → joinGroupCall
+  → connect. The same join-params string goes to JoinGroupCall; its ssrc is reused for
+  LeaveGroupCall.
+- `setStreamSources` REPLACES all devices — omitting the video channel drops it.
+  `setSource()` must rebuild video. Camera and screen cannot be active simultaneously.
+- `streamEnd` fires once per playback; with video, wait for BOTH audio and video to end
+  before auto-leave.
+- A failed join must stop the native call and send LeaveGroupCall (no zombie participant).
+- mtcute TL `Long` (low/high) objects must be preserved by reference — do not convert to
+  bigint. GramJS/teleproto use plain bigint.
+- `ConnectionState` is numeric (CONNECTING=1, CONNECTED=2, FAILED=4, TIMEOUT=8, CLOSED=16).
+- On native CLOSED/FAILED, leave via MTProto BEFORE notifying listeners.
+
+## Conventions
+
+- Library errors extend `TgCallsError` (`src/errors.ts`); add new typed errors there.
+- Internal warnings go through `opts.logger` (default `console.error`) — do not
+  `console.log` directly from library code.
+- Public API is re-exported from `src/index.ts`; keep `src/types.ts` the source of truth
+  for shared types. Examples live in `examples/`, tests in `test/`.
+- Examples use `teleproto` (the maintained GramJS fork); runtime still supports `telegram`.
+- Docs: `README.md`, `docs/*.md`, `llms.txt`, `llms-full.txt`. Keep them in sync with the
+  public API when you change signatures.
+
+## Release
+
+Version in `package.json` + a `CHANGELOG.md` entry. Tag `vX.Y.Z` and
+`gh release create vX.Y.Z` (releases via gh API work even when Actions is disabled).
+
+
+
+==============================================================================
+== Changelog  (CHANGELOG.md)
+==============================================================================
+
+# Changelog
+
+## 0.3.1 (2026-11-18)
+
+- Fix: typed errors — new `TgCallsError` base plus `AlreadyInCallError`,
+  `NoVoiceChatError`, `UnrecognizedClientError` (with `chatId` where
+  applicable) replace bare `Error` throws, so consumers can `instanceof`
+  instead of matching message strings. All still extend `Error`.
+- Feat: `logger` option on `TgCallsOptions` — route the library's internal
+  warnings (e.g. a throwing event handler) into your own logger. Defaults to
+  `console.error` (previous behaviour).
+- Fix: test suite now fails fast with a clear message when `ffmpeg` is not on
+  PATH (previously the missing binary surfaced from ntgcalls as a confusing
+  `vfork_launcher` ENOENT crash).
+- Chore: dev dependency `telegram` (archived GramJS) replaced by its maintained
+  fork `teleproto`; examples updated. Runtime support for `telegram` is
+  unchanged.
+- Docs: install troubleshooting for the native binary on npm versions that
+  skip optional dependencies, and the ffmpeg PATH requirement.
+
+## 0.3.0 (2026-11-10)
+
+- Feat: Add support for mtcute (`@mtcute/node`, `@mtcute/core`) via modular `MTProtoAdapter` and automatic client detection.
+- Feat: Export `MtcuteAdapter`, `GramjsAdapter`, `createAdapter`, `isMtcuteClient`, and `isGramjsClient`.
+
+- Fix: `setSource()` no longer drops the camera/screen video channel (ntgcalls removes any device omitted from `setStreamSources`); the video is rebuilt from the new source.
+- Fix: `streamEnd` fires once per playback. With video active it waits for both audio and video to end (was: once per stream type, auto-leaving early).
+- Fix: a failed `join()` now stops the native call and sends `LeaveGroupCall` (no zombie participant).
+- Fix: an event handler that throws/rejects no longer crashes the process (logged instead).
+- Fix: `joinYouTube()` with video/presentation now requests separate `bestvideo[height<=720]+bestaudio` streams (new `resolveYouTubeStreams()`, `audioUrl` on url sources) instead of the low-res pre-merged format that looked blurry.
+- Perf: video scaling `lanczos` -> `bicubic` (lighter on small VPS).
+- `startPresentation()`: skips the empty idle audio source; marks camera inactive (ntgcalls can't mix camera and screen).
+
+## 0.2.0 (2026-09-08)
+
+- Video sharing: `join(..., { video: {width, height, fps} })`
+- Screen share: `startPresentation()` / `stopPresentation()`
+- `joinIdle()` for stable idle presence
+
+## 0.1.0 (2026-09-08)
+
+First release. Audio-only.
+
+- `join()` / `joinYouTube()` with file / URL / shell PCM sources
+- `setSource()` — swap track without leaving (queue support)
+- `pause` / `resume` / `mute` / `unmute` / `leave` / `time`
+- Events: `streamEnd`, `connectionChange`, `update`
+- Works with GramJS (`telegram`) and teleproto; offline test suite with fake
+  MTProto + real ntgcalls native core

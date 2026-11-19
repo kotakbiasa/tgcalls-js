@@ -1,0 +1,28 @@
+# tgcalls-js
+
+> pytgcalls-style Telegram group-call wrapper for Node.js. Stream audio, video, and
+> screen shares into Telegram voice chats using teleproto/GramJS or mtcute, on top of
+> the ntgcalls native WebRTC core. MIT. Current version: 0.3.1.
+
+Key facts for assistants:
+- A **user account** session is required; bots cannot join Telegram voice chats.
+- `ffmpeg` must be on PATH (yt-dlp only for YouTube). Node.js >= 18.
+- Install: `npm install github:kotakbiasa/tgcalls-js#v0.3.1` (npm publish pending).
+- Main entry: `TgCallsClient` from `tgcalls-js`. Client type (teleproto/GramJS/mtcute) is auto-detected.
+- `ConnectionState` is a numeric enum: CONNECTING=1, CONNECTED=2, FAILED=4, TIMEOUT=8, CLOSED=16.
+- Errors extend `TgCallsError`: `AlreadyInCallError` (has `chatId`), `NoVoiceChatError`, `UnrecognizedClientError`.
+- Verified live: audio, video up to 1080p60, and 40-minute idle presence on a UDP-capable cloud host.
+
+## Docs
+
+- [Getting started](docs/getting-started.md): install, requirements, user login, first stream.
+- [Guide](docs/guide.md): join flow, sources, video, presentation, idle presence, queue, adapters, events, lifecycle.
+- [API reference](docs/api.md): every method, option, type, event, and error with signatures.
+- [Troubleshooting](docs/troubleshooting.md): native binary, ffmpeg, UDP/RTMP, YouTube bot-check, 2FA login.
+
+## Optional
+
+- [README](README.md): overview, quick start, API at a glance.
+- [AGENTS.md](AGENTS.md): build/test commands and conventions for coding agents.
+- [CHANGELOG](CHANGELOG.md): release history.
+- [Full documentation in one file](llms-full.txt): for bulk ingestion.
