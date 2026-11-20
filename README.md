@@ -30,8 +30,8 @@ core by the pytgcalls team — prebuilt binaries, no compiling).
 ## Install
 
 ```bash
-# npm publish is pending — install from the git repo (pin a tag for stability):
-npm install github:kotakbiasa/tgcalls-js#v0.5.0
+# Pin a tag for stability. npm 12+ blocks git dependencies by default, hence --allow-git:
+npm install --allow-git=all github:kotakbiasa/tgcalls-js#v0.7.0
 ```
 
 Requirements:
