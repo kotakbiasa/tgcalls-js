@@ -1,7 +1,6 @@
 # tgcalls-js — full documentation (llms-full.txt)
 # Generated concatenation of README + docs for bulk LLM ingestion.
-# Version 0.6.0 (multi-handler events; P2P experimental). Source of truth: the individual files in this repo.
-
+# Version 0.7.0 (P2P calls verified live; incoming 1-on-1 calls stream audio). Source of truth: the individual files in this repo.
 
 
 ==============================================================================
@@ -29,7 +28,7 @@ core by the pytgcalls team — prebuilt binaries, no compiling).
 - 🎵 **Audio** from a file, direct URL, YouTube (via yt-dlp), or a custom shell PCM pipe.
 - 📃 **Playlist/queue** — `play()` / `enqueue()` / `skip()` / `playOnHold()`; tracks auto-advance, hold music loops while the queue is empty.
 - ⏺️ **Recording** — `startRecording()` / `stopRecording()`; records incoming call audio (native mix of all speakers) to wav/mp3/opus via ffmpeg.
-- 📞 **Incoming P2P calls** *(experimental — blocked by an upstream ntgcalls JS-binding bug; not yet functional live)* — `listenCalls()` answers 1-on-1 voice calls and streams audio into them.
+- 📞 **Incoming P2P calls** *(verified live)* — `listenCalls()` answers 1-on-1 voice calls and streams audio into them.
 - 🎬 **Video** from the same source (`video: {width, height, fps}`), camera or presentation channel.
 - 🖥️ **Screen share** via `startPresentation()` / `stopPresentation()`.
 - 🧍 **Idle presence** via `joinIdle()` — stay in a call with no media (stable on UDP-capable hosts).
@@ -192,8 +191,6 @@ See [`AGENTS.md`](AGENTS.md) for conventions and pitfalls.
 MIT for this wrapper. [`ntgcalls`](https://github.com/pytgcalls/ntgcalls) is
 LGPL-3.0 (its own repo, installed as a dependency).
 
-
-
 ==============================================================================
 == Getting started  (docs/getting-started.md)
 ==============================================================================
@@ -286,8 +283,6 @@ npm run smoke
 
 Next: the [Guide](guide.md) for video, presentation, idle, and adapters, or the
 [API reference](api.md).
-
-
 
 ==============================================================================
 == Guide  (docs/guide.md)
@@ -423,9 +418,8 @@ After `stopRecording`, give ffmpeg a moment to finalize before reading the file.
 
 ## P2P calls (incoming)
 
-> **⚠️ Experimental — not yet functional live** (upstream ntgcalls JS-binding
-> `initExchange` bug; see CHANGELOG 0.6.0). The API below is implemented and
-> offline-tested but actual calls fail until the binding is fixed upstream.
+> **✅ Verified live** (0.7.0): the call reaches ICE `CONNECTED` and audio is heard
+> by the caller. Requires a GramJS/teleproto client.
 
 Answer incoming 1-on-1 voice calls and stream audio into them (e.g. a voice bot):
 
@@ -509,8 +503,6 @@ try {
 
 All library errors extend `TgCallsError` (which extends `Error`). See the
 [API reference](api.md#errors).
-
-
 
 ==============================================================================
 == API reference  (docs/api.md)
@@ -637,11 +629,17 @@ call also stops any recording.
 
 #### P2P calls (incoming)
 
-> **⚠️ Experimental — not yet functional live.** Blocked by an ntgcalls JS-binding
-> bug (`initExchange` throws `An array was expected` converting `DhConfig`;
-> reproduces on 3.0.7 and 3.1.0-beta01 with every input form). The orchestration
-> below is implemented and offline-tested; it will work once the upstream binding
-> is fixed.
+> **✅ Verified live** (tgcalls-js 0.7.0): incoming 1-on-1 calls connect and stream
+> audio end-to-end (ICE `CONNECTED`, RTP flowing, audio heard by the caller).
+>
+> Notes for implementers:
+> - Byte parameters passed to the ntgcalls binding must be **plain JS arrays**
+>   (`Array.from(buf)`); `Buffer`/`Uint8Array` throw `An array was expected`.
+>   The wrapper does this for you.
+> - Signaling must use **V2 external signaling** (`8.0.0`/`9.0.0`). Passing
+>   `12.0.0`/`13.0.0` makes ntgcalls route signaling over an SCTP data channel and
+>   the call times out. `listenCalls` restricts the version list automatically.
+> - Set `debug: true` to log per-step signaling/ICE diagnostics.
 
 ```ts
 listenCalls(options: ListenCallsOptions): Promise<void>
@@ -652,7 +650,7 @@ activeCallPeers(): bigint[]
 `listenCalls` answers incoming 1-on-1 voice calls and streams `options.source` into
 them. `ListenCallsOptions`: `source` (AudioSource), `autoAccept` (default true),
 `onIncoming({userId, callId}) => boolean` (gate to accept/reject), `ffmpegPath`,
-`logger`. The DH exchange + WebRTC run in ntgcalls; the library handles the MTProto
+`debug` (verbose `[p2p]` signaling/ICE logs, default false), `logger`. The DH exchange + WebRTC run in ntgcalls; the library handles the MTProto
 signaling. Requires a GramJS/teleproto client. One listener per client; calling
 again replaces it. `stopListeningCalls` hangs up active calls. Outgoing calls and
 multi-party conference are not yet supported.
@@ -823,8 +821,6 @@ resetTlCache(): void
 loadEvents(...): unknown
 ```
 
-
-
 ==============================================================================
 == Troubleshooting  (docs/troubleshooting.md)
 ==============================================================================
@@ -929,7 +925,23 @@ long-running bots are unaffected.
 Pass the matching `Api` namespace to each `TgCallsClient` to avoid ambiguous TL
 auto-detection. mtcute uses its own TL schema and needs no `Api`.
 
+## Incoming P2P call never connects (ICE `TIMEOUT`)
 
+Four distinct failures can each stop a 1-on-1 call; the wrapper fixes them, but
+they matter if you call `ntgcalls` directly or debug a fork:
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `An array was expected` from `initExchange` | `bytes::binary` is read as `Napi::Array` — `Buffer`/`Uint8Array` are rejected | pass `Array.from(buf)` |
+| `phone.acceptCall` → `CALL_PEER_INVALID` | TL `long` is a `big-integer` object; `BigInt(obj)` goes through `Number` and loses precision | convert via `toString()` |
+| `connectP2p` → `incomplete JSON [boost.json:3]` | `customParameters: ''` is a *present* optional; `json::parse("")` throws | pass `'{}'` |
+| `Failed to parse received SCTP packet`, `Sorting 0 available connections`, then `TIMEOUT` | versions list includes `12.0.0`/`13.0.0` → ntgcalls routes signaling over an SCTP data channel, but Telegram sends it via MTProto | restrict to `8.0.0`/`9.0.0` |
+
+Debug with `setLogLevel(LogLevel.DEBUG)` (from `ntgcalls`) and
+`listenCalls({ debug: true })`. A healthy call logs, in order:
+`Using signaling V2 Legacy` → `Decrypting packets` (inbound signaling) →
+`new remote candidate` → `state= 2` (`CONNECTED`) →
+`First audio RTP packet sent to pacer`.
 
 ==============================================================================
 == Agent/contributor guidance  (AGENTS.md)
@@ -1005,15 +1017,43 @@ Fix: `npm install @ntgcalls/linux-x64@3.0.7 --no-save` (match the `ntgcalls` ver
 Version in `package.json` + a `CHANGELOG.md` entry. Tag `vX.Y.Z` and
 `gh release create vX.Y.Z` (releases via gh API work even when Actions is disabled).
 
-
-
 ==============================================================================
 == Changelog  (CHANGELOG.md)
 ==============================================================================
 
 # Changelog
 
+## 0.7.0 (2026-11-20)
+
+**P2P calls now work end-to-end — verified live** (ICE `CONNECTED`, audio RTP flowing,
+caller hears the stream). Four defects were fixed on the way; all were silent or
+misattributed, so they are documented here.
+
+- Fix: **byte parameters must be JS arrays** — the ntgcalls N-API glue reads
+  `bytes::binary` via `v.As<Napi::Array>()`, so `Buffer`/`Uint8Array`/`ArrayBuffer`
+  throw `An array was expected`. New `jsBytes()` helper converts at every binding
+  boundary (`initExchange` p/random/gaHash, `exchangeKeys` gAOrB, `sendSignalingData`,
+  `RTCServer.peerTag`). The published `index.d.ts` claiming `Buffer` is wrong.
+- Fix: **64-bit TL integers were lossy** — teleproto represents `long` as a
+  `big-integer` object; `BigInt(obj)` goes through `valueOf()` → `Number` and loses
+  precision above 2^53, so `accessHash` was corrupted and `phone.acceptCall` returned
+  `CALL_PEER_INVALID`. New `asBigInt0()` converts via `toString()`.
+- Fix: **`connectP2p` customParameters** — `''` is a *present* optional, so the native
+  `json::parse("")` threw `incomplete JSON`. Now sends `'{}'`.
+- Fix: **signaling version selection** — ntgcalls picks the highest supported version
+  from the list; `12.0.0`/`13.0.0` select `SignalingSctpConnection` (signaling over the
+  SCTP data channel), but Telegram 1:1 calls carry signaling over MTProto. Inbound
+  packets were fed into SCTP (`Failed to parse received SCTP packet`), remote candidates
+  never reached ICE, and the call timed out with `Sorting 0 available connections`.
+  Now restricted to the peer's V2 subset (`8.0.0`/`9.0.0`).
+- Feat: `listenCalls({ debug: true })` for per-step signaling/ICE diagnostics; the
+  verbose `[p2p]` logs are off by default.
+- Docs: P2P marked verified; implementer notes on arrays, V2 signaling and `debug`.
+
 ## 0.6.0 (2026-11-19)
+
+> **Superseded by 0.7.0** — the blocker described below was a binding-usage issue,
+> not an upstream bug: byte arguments must be plain JS arrays. P2P works in 0.7.0.
 
 > **⚠️ P2P calls are EXPERIMENTAL and not yet functional live.** The signaling
 > orchestration is implemented and offline-tested, but actual calls are blocked by

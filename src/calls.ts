@@ -27,6 +27,8 @@ export interface ListenCallsOptions {
   onIncoming?: (info: { userId: bigint; callId: bigint }) => boolean | Promise<boolean>;
   /** ffmpeg binary override. */
   ffmpegPath?: string;
+  /** Verbose per-step signaling/ICE diagnostics (default false). */
+  debug?: boolean;
   /** Sink for internal warnings. */
   logger?: { error(...args: unknown[]): void };
 }
@@ -81,6 +83,7 @@ export class P2PCallManager {
   private readonly sessions = new Map<bigint, P2PSession>(); // callId → session
   private stopHandler: (() => void) | null = null;
   private readonly log: { error(...args: unknown[]): void };
+  private readonly debug: boolean;
 
   constructor(
     private readonly ntg: NTgCalls,
@@ -88,6 +91,7 @@ export class P2PCallManager {
     private readonly opts: ListenCallsOptions,
   ) {
     this.log = opts.logger ?? { error: console.error.bind(console) };
+    this.debug = opts.debug ?? false;
   }
 
   /** Start listening for incoming P2P calls. */
@@ -127,7 +131,7 @@ export class P2PCallManager {
   private async relayOut(peerId: bigint, data: Buffer): Promise<void> {
     const s = this.findByPeer(peerId);
     if (!s) {return;}
-    this.log.error('[p2p] sigOut peer=%s len=%d hex=%s', String(peerId), data?.length, data?.subarray(0, 44).toString('hex'));
+    if (this.debug) { this.log.error('[p2p] sigOut peer=%s len=%d hex=%s', String(peerId), data?.length, data?.subarray(0, 44).toString('hex')); }
     try { await this.adapter.sendSignalingData!(s.callId, s.accessHash, data); }
     catch (e) { this.log.error('[tgcalls-js] signaling relay error:', e); }
   }
@@ -135,7 +139,7 @@ export class P2PCallManager {
   private async onSignalingIn(callId: bigint, data: Buffer): Promise<void> {
     const s = this.sessions.get(callId);
     if (!s) {return;}
-    this.log.error('[p2p] sigIn callId=%s len=%d connInit=%s', String(callId), data?.length, String(s.connInit));
+    if (this.debug) { this.log.error('[p2p] sigIn callId=%s len=%d connInit=%s', String(callId), data?.length, String(s.connInit)); }
     if (!s.connInit) { s.queue.push(data); return; }
     try { await this.ntg.sendSignalingData(s.peerId, jsBytes(data)); }
     catch (e) { this.log.error('[tgcalls-js] sendSignalingData error:', e); }
@@ -172,9 +176,11 @@ export class P2PCallManager {
     const session: P2PSession = { callId, accessHash, peerId, p2pStarted: false, connInit: false, queue: [], startedAt: Date.now() };
     this.sessions.set(callId, session);
     const t0 = Date.now();
-    const step = (m: string): void => this.log.error(`[p2p] ${m} +${Date.now() - t0}ms`);
-    this.log.error('[p2p] incoming callId=%s peer=%s idType=%s ahType=%s accessHash=%s',
-      String(callId), String(peerId), typeof pc.id, typeof pc.accessHash, String(pc.accessHash));
+    const step = (m: string): void => { if (this.debug) { this.log.error(`[p2p] ${m} +${Date.now() - t0}ms`); } };
+    if (this.debug) {
+      this.log.error('[p2p] incoming callId=%s peer=%s idType=%s ahType=%s accessHash=%s',
+        String(callId), String(peerId), typeof pc.id, typeof pc.accessHash, String(pc.accessHash));
+    }
 
     // createP2pCall MUST precede initExchange; the native call id is the peer id.
     await this.ntg.createP2pCall(peerId);
@@ -206,18 +212,21 @@ export class P2PCallManager {
     s.p2pStarted = true;
     s.accessHash = asBigInt0(pc.accessHash);
     const t1 = Date.now();
-    const st = (m: string): void => this.log.error(`[p2p] ${m} +${Date.now() - t1}ms`);
-    this.log.error('[p2p] confirmed id=%s gAOrB.len=%s fingerprint=%s conns=%d p2pAllowed=%s',
-      String(callId), String((pc.gAOrB as unknown as Buffer)?.length), String(pc.keyFingerprint),
-      (pc.connections ?? []).length, String(pc.p2pAllowed));
+    const st = (m: string): void => { if (this.debug) { this.log.error(`[p2p] ${m} +${Date.now() - t1}ms`); } };
+    if (this.debug) {
+      this.log.error('[p2p] confirmed id=%s gAOrB.len=%s fingerprint=%s conns=%d p2pAllowed=%s',
+        String(callId), String((pc.gAOrB as unknown as Buffer)?.length), String(pc.keyFingerprint),
+        (pc.connections ?? []).length, String(pc.p2pAllowed));
+    }
 
     await this.ntg.exchangeKeys(s.peerId, jsBytes(pc.gAOrB), asBigInt0(pc.keyFingerprint));
     st('exchangeKeys ok');
     const servers = buildRtcServers(pc.connections);
     const jsonSafe = (_k: string, v: unknown): unknown => typeof v === 'bigint' ? String(v) : (Array.isArray(v) ? `Array(${v.length})` : (Buffer.isBuffer(v) ? `Buf(${v.length})` : v));
-    this.log.error('[p2p] servers=%s', JSON.stringify(servers, jsonSafe));
-    this.log.error('[p2p] rawConn0=%s', JSON.stringify((pc.connections ?? [])[0], jsonSafe));
-    const protocol = NTgCalls.getProtocol();
+    if (this.debug) {
+      this.log.error('[p2p] servers=%s', JSON.stringify(servers, jsonSafe));
+      this.log.error('[p2p] rawConn0=%s', JSON.stringify((pc.connections ?? [])[0], jsonSafe));
+    }
     // Signaling version: V3 (12.0.0/13.0.0) makes ntgcalls route signaling over an
     // SCTP data channel (SignalingSctpConnection), which is NOT the transport Telegram
     // uses for 1:1 calls — signaling arrives over MTProto (phone.sendSignalingData /
@@ -225,7 +234,7 @@ export class P2PCallManager {
     const peerVersions: string[] = Array.isArray(pc.protocol?.libraryVersions) ? pc.protocol.libraryVersions : [];
     const v2 = peerVersions.filter((v) => v === '8.0.0' || v === '9.0.0');
     const versions = v2.length ? v2 : ['8.0.0'];
-    this.log.error('[p2p] peerVersions=%s -> using=%s', JSON.stringify(peerVersions), JSON.stringify(versions));
+    if (this.debug) { this.log.error('[p2p] peerVersions=%s -> using=%s', JSON.stringify(peerVersions), JSON.stringify(versions)); }
     // customParameters must be valid JSON: an empty string is a PRESENT optional
     // and json::parse("") throws "incomplete JSON" inside the native core.
     await this.ntg.connectP2p(s.peerId, servers as never, versions, pc.p2pAllowed ?? true, '{}');

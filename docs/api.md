@@ -119,11 +119,17 @@ call also stops any recording.
 
 #### P2P calls (incoming)
 
-> **⚠️ Experimental — not yet functional live.** Blocked by an ntgcalls JS-binding
-> bug (`initExchange` throws `An array was expected` converting `DhConfig`;
-> reproduces on 3.0.7 and 3.1.0-beta01 with every input form). The orchestration
-> below is implemented and offline-tested; it will work once the upstream binding
-> is fixed.
+> **✅ Verified live** (tgcalls-js 0.7.0): incoming 1-on-1 calls connect and stream
+> audio end-to-end (ICE `CONNECTED`, RTP flowing, audio heard by the caller).
+>
+> Notes for implementers:
+> - Byte parameters passed to the ntgcalls binding must be **plain JS arrays**
+>   (`Array.from(buf)`); `Buffer`/`Uint8Array` throw `An array was expected`.
+>   The wrapper does this for you.
+> - Signaling must use **V2 external signaling** (`8.0.0`/`9.0.0`). Passing
+>   `12.0.0`/`13.0.0` makes ntgcalls route signaling over an SCTP data channel and
+>   the call times out. `listenCalls` restricts the version list automatically.
+> - Set `debug: true` to log per-step signaling/ICE diagnostics.
 
 ```ts
 listenCalls(options: ListenCallsOptions): Promise<void>
@@ -134,7 +140,7 @@ activeCallPeers(): bigint[]
 `listenCalls` answers incoming 1-on-1 voice calls and streams `options.source` into
 them. `ListenCallsOptions`: `source` (AudioSource), `autoAccept` (default true),
 `onIncoming({userId, callId}) => boolean` (gate to accept/reject), `ffmpegPath`,
-`logger`. The DH exchange + WebRTC run in ntgcalls; the library handles the MTProto
+`debug` (verbose `[p2p]` signaling/ICE logs, default false), `logger`. The DH exchange + WebRTC run in ntgcalls; the library handles the MTProto
 signaling. Requires a GramJS/teleproto client. One listener per client; calling
 again replaces it. `stopListeningCalls` hangs up active calls. Outgoing calls and
 multi-party conference are not yet supported.

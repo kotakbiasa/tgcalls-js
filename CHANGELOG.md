@@ -1,6 +1,36 @@
 # Changelog
 
+## 0.7.0 (2026-11-20)
+
+**P2P calls now work end-to-end — verified live** (ICE `CONNECTED`, audio RTP flowing,
+caller hears the stream). Four defects were fixed on the way; all were silent or
+misattributed, so they are documented here.
+
+- Fix: **byte parameters must be JS arrays** — the ntgcalls N-API glue reads
+  `bytes::binary` via `v.As<Napi::Array>()`, so `Buffer`/`Uint8Array`/`ArrayBuffer`
+  throw `An array was expected`. New `jsBytes()` helper converts at every binding
+  boundary (`initExchange` p/random/gaHash, `exchangeKeys` gAOrB, `sendSignalingData`,
+  `RTCServer.peerTag`). The published `index.d.ts` claiming `Buffer` is wrong.
+- Fix: **64-bit TL integers were lossy** — teleproto represents `long` as a
+  `big-integer` object; `BigInt(obj)` goes through `valueOf()` → `Number` and loses
+  precision above 2^53, so `accessHash` was corrupted and `phone.acceptCall` returned
+  `CALL_PEER_INVALID`. New `asBigInt0()` converts via `toString()`.
+- Fix: **`connectP2p` customParameters** — `''` is a *present* optional, so the native
+  `json::parse("")` threw `incomplete JSON`. Now sends `'{}'`.
+- Fix: **signaling version selection** — ntgcalls picks the highest supported version
+  from the list; `12.0.0`/`13.0.0` select `SignalingSctpConnection` (signaling over the
+  SCTP data channel), but Telegram 1:1 calls carry signaling over MTProto. Inbound
+  packets were fed into SCTP (`Failed to parse received SCTP packet`), remote candidates
+  never reached ICE, and the call timed out with `Sorting 0 available connections`.
+  Now restricted to the peer's V2 subset (`8.0.0`/`9.0.0`).
+- Feat: `listenCalls({ debug: true })` for per-step signaling/ICE diagnostics; the
+  verbose `[p2p]` logs are off by default.
+- Docs: P2P marked verified; implementer notes on arrays, V2 signaling and `debug`.
+
 ## 0.6.0 (2026-11-19)
+
+> **Superseded by 0.7.0** — the blocker described below was a binding-usage issue,
+> not an upstream bug: byte arguments must be plain JS arrays. P2P works in 0.7.0.
 
 > **⚠️ P2P calls are EXPERIMENTAL and not yet functional live.** The signaling
 > orchestration is implemented and offline-tested, but actual calls are blocked by

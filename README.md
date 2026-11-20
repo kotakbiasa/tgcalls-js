@@ -19,7 +19,7 @@ core by the pytgcalls team — prebuilt binaries, no compiling).
 - 🎵 **Audio** from a file, direct URL, YouTube (via yt-dlp), or a custom shell PCM pipe.
 - 📃 **Playlist/queue** — `play()` / `enqueue()` / `skip()` / `playOnHold()`; tracks auto-advance, hold music loops while the queue is empty.
 - ⏺️ **Recording** — `startRecording()` / `stopRecording()`; records incoming call audio (native mix of all speakers) to wav/mp3/opus via ffmpeg.
-- 📞 **Incoming P2P calls** *(experimental — blocked by an upstream ntgcalls JS-binding bug; not yet functional live)* — `listenCalls()` answers 1-on-1 voice calls and streams audio into them.
+- 📞 **Incoming P2P calls** *(verified live)* — `listenCalls()` answers 1-on-1 voice calls and streams audio into them.
 - 🎬 **Video** from the same source (`video: {width, height, fps}`), camera or presentation channel.
 - 🖥️ **Screen share** via `startPresentation()` / `stopPresentation()`.
 - 🧍 **Idle presence** via `joinIdle()` — stay in a call with no media (stable on UDP-capable hosts).

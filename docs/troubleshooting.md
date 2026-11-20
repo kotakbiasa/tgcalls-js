@@ -97,3 +97,21 @@ long-running bots are unaffected.
 
 Pass the matching `Api` namespace to each `TgCallsClient` to avoid ambiguous TL
 auto-detection. mtcute uses its own TL schema and needs no `Api`.
+
+## Incoming P2P call never connects (ICE `TIMEOUT`)
+
+Four distinct failures can each stop a 1-on-1 call; the wrapper fixes them, but
+they matter if you call `ntgcalls` directly or debug a fork:
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `An array was expected` from `initExchange` | `bytes::binary` is read as `Napi::Array` — `Buffer`/`Uint8Array` are rejected | pass `Array.from(buf)` |
+| `phone.acceptCall` → `CALL_PEER_INVALID` | TL `long` is a `big-integer` object; `BigInt(obj)` goes through `Number` and loses precision | convert via `toString()` |
+| `connectP2p` → `incomplete JSON [boost.json:3]` | `customParameters: ''` is a *present* optional; `json::parse("")` throws | pass `'{}'` |
+| `Failed to parse received SCTP packet`, `Sorting 0 available connections`, then `TIMEOUT` | versions list includes `12.0.0`/`13.0.0` → ntgcalls routes signaling over an SCTP data channel, but Telegram sends it via MTProto | restrict to `8.0.0`/`9.0.0` |
+
+Debug with `setLogLevel(LogLevel.DEBUG)` (from `ntgcalls`) and
+`listenCalls({ debug: true })`. A healthy call logs, in order:
+`Using signaling V2 Legacy` → `Decrypting packets` (inbound signaling) →
+`new remote candidate` → `state= 2` (`CONNECTED`) →
+`First audio RTP packet sent to pacer`.
