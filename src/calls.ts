@@ -349,7 +349,7 @@ export class P2PCallManager {
     const auth = await this.ntg.exchangeKeys(s.peerId, jsBytes(pc.gB), 0n) as { keyFingerprint: bigint; gAOrB: Buffer };
     st(`exchangeKeys (outgoing) ok fingerprint=${String(auth.keyFingerprint)}`);
     const confirmed = await this.adapter.confirmCall!(
-      callId, s.accessHash, jsBytes(auth.gAOrB) as never, asBigInt0(auth.keyFingerprint), NTgCalls.getProtocol(),
+      callId, s.accessHash, Buffer.from(auth.gAOrB as unknown as Uint8Array), asBigInt0(auth.keyFingerprint), NTgCalls.getProtocol(),
     ) as PhoneCallObj;
     st('confirmCall ok');
     s.p2pStarted = true;

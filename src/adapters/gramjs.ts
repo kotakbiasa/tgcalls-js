@@ -259,9 +259,9 @@ export class GramjsAdapter implements MTProtoAdapter {
     }));
   }
 
-  async confirmCall(callId: bigint, accessHash: bigint, gB: Buffer, keyFingerprint: bigint, protocol: unknown): Promise<unknown> {
+  async confirmCall(callId: bigint, accessHash: bigint, gA: Buffer, keyFingerprint: bigint, protocol: unknown): Promise<unknown> {
     return await this.client.invoke(new this.Api.phone.ConfirmCall({
-      peer: this.inputPhoneCall(callId, accessHash), gB, keyFingerprint, protocol: this.phoneProtocol(protocol),
+      peer: this.inputPhoneCall(callId, accessHash), gA, keyFingerprint, protocol: this.phoneProtocol(protocol),
     }));
   }
 
