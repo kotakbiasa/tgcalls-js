@@ -207,7 +207,9 @@ export class P2PCallManager {
     await this.ntg.exchangeKeys(s.peerId, jsBytes(pc.gAOrB), asBigInt0(pc.keyFingerprint));
     const servers = buildRtcServers(pc.connections);
     const protocol = NTgCalls.getProtocol();
-    await this.ntg.connectP2p(s.peerId, servers as never, protocol.libraryVersions, pc.p2pAllowed ?? true, '');
+    // customParameters must be valid JSON: an empty string is a PRESENT optional
+    // and json::parse("") throws "incomplete JSON" inside the native core.
+    await this.ntg.connectP2p(s.peerId, servers as never, protocol.libraryVersions, pc.p2pAllowed ?? true, '{}');
 
     s.connInit = true;
     for (const queued of s.queue) {
