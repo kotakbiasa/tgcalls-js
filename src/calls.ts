@@ -326,9 +326,12 @@ export class P2PCallManager {
     ) as Buffer;
     const protocol = NTgCalls.getProtocol();
     const res = await this.adapter.requestCall!(userId, gAHash, protocol, wantVideo) as PhoneCallObj;
-    const callId = asBigInt0(res.id);
+    // teleproto wraps the RPC result: { className: 'phone.PhoneCall', phoneCall, users }.
+    const raw = (res?.phoneCall ?? res) as PhoneCallObj;
+    const callId = asBigInt0(raw?.id);
+    if (!callId) { throw new Error('phone.requestCall returned no call id'); }
     this.sessions.set(callId, {
-      callId, accessHash: asBigInt0(res.accessHash), peerId: userId,
+      callId, accessHash: asBigInt0(raw?.accessHash), peerId: userId,
       p2pStarted: false, connInit: false, queue: [], startedAt: Date.now(),
     });
     if (this.debug) { this.log.error('[p2p] outgoing callId=%s gAHash.len=%s video=%s', String(callId), String(gAHash?.length), String(wantVideo)); }

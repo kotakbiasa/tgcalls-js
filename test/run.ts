@@ -848,7 +848,7 @@ async function main(): Promise<void> {
     const adapter3: any = {
       isAdapter: true,
       getDhConfig: async () => ({ g: 3, p: Buffer.alloc(256, 1), random: Buffer.alloc(256, 1) }),
-      requestCall: async (uid: bigint, gAHash: Buffer, _p: unknown, video: boolean) => { log3.push(`requestCall:${uid}:${gAHash.length}:${video}`); return { id: 999n, accessHash: 888n }; },
+      requestCall: async (uid: bigint, gAHash: Buffer, _p: unknown, video: boolean) => { log3.push(`requestCall:${uid}:${gAHash.length}:${video}`); return { className: 'phone.PhoneCall', phoneCall: { className: 'PhoneCallWaiting', id: 999n, accessHash: 888n }, users: [] }; },
       confirmCall: async (id: bigint, ah: bigint, gA: Buffer, fp: bigint) => { log3.push(`confirmCall:${String(id)}:${String(ah)}:${gA.length}:${String(fp)}`); return { className: 'PhoneCall', id: 999n, accessHash: 888n, connections: [{ id: 1n, ip: '1.2.3.4', ipv6: '', port: 1, turn: false, stun: false, tcp: false }], p2pAllowed: true, protocol: { libraryVersions: ['8.0.0'] } }; },
       discardCall: async () => {},
       acceptCall: async () => ({}),
