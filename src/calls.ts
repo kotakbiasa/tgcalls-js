@@ -211,6 +211,7 @@ export class P2PCallManager {
     const kind = pc?.className;
     try {
       if (kind === 'PhoneCallRequested') {await this.acceptIncoming(pc);}
+      else if (kind === 'PhoneCallAccepted') {await this.onAccepted(pc);}
       else if (kind === 'PhoneCall') {await this.connectP2p(pc);}
       else if (kind === 'PhoneCallDiscarded') {await this.onDiscarded(pc);}
       // PhoneCallAccepted / PhoneCallWaiting belong to the outgoing flow (later phase).
@@ -297,6 +298,63 @@ export class P2PCallManager {
 
     await this.ntg.exchangeKeys(s.peerId, jsBytes(pc.gAOrB), asBigInt0(pc.keyFingerprint));
     st('exchangeKeys ok');
+    await this.startTransport(s, pc, st);
+  }
+
+  /**
+   * Start an outgoing call. Returns the Telegram call id. The peer's accept
+   * arrives as PhoneCallAccepted → confirmCall → PhoneCall, after which the
+   * shared transport path (connectP2p + media) takes over.
+   */
+  async call(userId: bigint, opts: { video?: boolean | VideoOptions } = {}): Promise<bigint> {
+    const wantVideo = Boolean(opts.video);
+    const mediaOpts = { client: {} as never, ffmpegPath: this.opts.ffmpegPath, ffprobePath: this.opts.ffprobePath } as TgCallsOptions;
+    await this.ntg.createP2pCall(userId);
+    const media: Record<string, unknown> = { microphone: audioDescription(this.opts.source, mediaOpts) };
+    if (wantVideo && this.opts.source.kind !== 'shell') {
+      const targetOpts = typeof opts.video === 'object' ? opts.video : {};
+      const srcPath = this.opts.source.kind === 'file' ? this.opts.source.path : this.opts.source.url;
+      const probed = await probeVideo(srcPath, mediaOpts, targetOpts);
+      media.camera = videoDescription(this.opts.source, { ...probed, ...targetOpts, width: probed.width, height: probed.height, fps: probed.fps }, mediaOpts);
+    }
+    await this.ntg.setStreamSources(userId, StreamMode.CAPTURE, media as never);
+
+    const dh = await this.adapter.getDhConfig!();
+    // null gaHash → native returns SHA256(g_a) instead of g_b (outgoing branch).
+    const gAHash = await this.ntg.initExchange(
+      userId, { g: dh.g, p: jsBytes(dh.p), random: jsBytes(dh.random) }, null as never,
+    ) as Buffer;
+    const protocol = NTgCalls.getProtocol();
+    const res = await this.adapter.requestCall!(userId, gAHash, protocol, wantVideo) as PhoneCallObj;
+    const callId = asBigInt0(res.id);
+    this.sessions.set(callId, {
+      callId, accessHash: asBigInt0(res.accessHash), peerId: userId,
+      p2pStarted: false, connInit: false, queue: [], startedAt: Date.now(),
+    });
+    if (this.debug) { this.log.error('[p2p] outgoing callId=%s gAHash.len=%s video=%s', String(callId), String(gAHash?.length), String(wantVideo)); }
+    return callId;
+  }
+
+  /** Callee accepted our outgoing call: exchange keys and confirm. */
+  private async onAccepted(pc: PhoneCallObj): Promise<void> {
+    const callId = asBigInt0(pc.id);
+    const s = this.sessions.get(callId);
+    if (!s || s.p2pStarted) {return;}
+    const t1 = Date.now();
+    const st = (m: string): void => { if (this.debug) { this.log.error(`[p2p] ${m} +${Date.now() - t1}ms`); } };
+    // No fingerprint yet in the outgoing direction — the native core computes it.
+    const auth = await this.ntg.exchangeKeys(s.peerId, jsBytes(pc.gB), 0n) as { keyFingerprint: bigint; gAOrB: Buffer };
+    st(`exchangeKeys (outgoing) ok fingerprint=${String(auth.keyFingerprint)}`);
+    const confirmed = await this.adapter.confirmCall!(
+      callId, s.accessHash, jsBytes(auth.gAOrB) as never, asBigInt0(auth.keyFingerprint), NTgCalls.getProtocol(),
+    ) as PhoneCallObj;
+    st('confirmCall ok');
+    s.p2pStarted = true;
+    await this.startTransport(s, confirmed, st);
+  }
+
+  /** Connect the native transport and start media (shared by both directions). */
+  private async startTransport(s: P2PSession, pc: PhoneCallObj, st: (m: string) => void): Promise<void> {
     const servers = buildRtcServers(pc.connections);
     const jsonSafe = (_k: string, v: unknown): unknown => typeof v === 'bigint' ? String(v) : (Array.isArray(v) ? `Array(${v.length})` : (Buffer.isBuffer(v) ? `Buf(${v.length})` : v));
     if (this.debug) {

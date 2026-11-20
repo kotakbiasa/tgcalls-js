@@ -828,6 +828,45 @@ async function main(): Promise<void> {
     await tick();
     assert.ok(log2.includes('discard') && !log2.includes('accept'), 'onIncoming=false rejects the call');
     await mgr2.stop();
+
+    // --- outgoing call: call() → PhoneCallAccepted → confirmCall → connectP2p.
+    const log3: string[] = [];
+    let phoneCb3: any;
+    const fakeNtg3: any = {
+      createP2pCall: async (id: bigint) => { log3.push(`createP2pCall:${id}`); },
+      setStreamSources: async (_id: bigint, mode: number) => { log3.push(`setStream:${mode}`); },
+      initExchange: async (_id: bigint, _dh: any, gaHash: any) => { log3.push(`initExchange:${gaHash === null ? 'null' : Array.isArray(gaHash) ? 'array' : typeof gaHash}`); return Buffer.alloc(32, 5); },
+      exchangeKeys: async (_id: bigint, gAOrB: any, fp: any) => { log3.push(`exchangeKeys:${String(fp)}`); if (Array.isArray(gAOrB)) { log3.push('exchangeKeys:array'); } return { keyFingerprint: 123n, gAOrB: Buffer.alloc(256, 4) }; },
+      connectP2p: async (_id: bigint, servers: unknown[]) => { log3.push(`connectP2p:${servers.length}`); },
+      sendSignalingData: async () => {},
+      unmute: async () => { log3.push('unmute'); },
+      resume: async () => { log3.push('resume'); },
+      stop: async () => {},
+      onSignalingData: () => {},
+      onFrames: () => {},
+    };
+    const adapter3: any = {
+      isAdapter: true,
+      getDhConfig: async () => ({ g: 3, p: Buffer.alloc(256, 1), random: Buffer.alloc(256, 1) }),
+      requestCall: async (uid: bigint, gAHash: Buffer, _p: unknown, video: boolean) => { log3.push(`requestCall:${uid}:${gAHash.length}:${video}`); return { id: 999n, accessHash: 888n }; },
+      confirmCall: async (id: bigint, ah: bigint, gA: Buffer, fp: bigint) => { log3.push(`confirmCall:${String(id)}:${String(ah)}:${gA.length}:${String(fp)}`); return { className: 'PhoneCall', id: 999n, accessHash: 888n, connections: [{ id: 1n, ip: '1.2.3.4', ipv6: '', port: 1, turn: false, stun: false, tcp: false }], p2pAllowed: true, protocol: { libraryVersions: ['8.0.0'] } }; },
+      discardCall: async () => {},
+      acceptCall: async () => ({}),
+      sendSignalingData: async () => {},
+      installCallHandler: (onPC: any) => { phoneCb3 = onPC; return () => {}; },
+    };
+    const mgr3 = new P2PCallManager(fakeNtg3, adapter3, { source: { kind: 'file', path: '/tmp/x.mp3' } });
+    mgr3.start();
+    const callId3 = await mgr3.call(444n);
+    assert.equal(String(callId3), '999', 'outgoing call id comes from requestCall');
+    assert.ok(log3.includes('initExchange:null'), 'outgoing initExchange passes null gaHash (native returns g_a_hash)');
+    assert.ok(log3.includes('requestCall:444:32:false'), 'requestCall receives the 32-byte g_a_hash');
+    await phoneCb3({ className: 'PhoneCallAccepted', id: 999n, gB: Buffer.alloc(256, 3) });
+    await tick();
+    assert.ok(log3.includes('exchangeKeys:0'), 'outgoing exchangeKeys runs without a fingerprint');
+    assert.ok(log3.some((c) => c.startsWith('confirmCall:999:888:256:123')), 'confirmCall sends g_a + computed fingerprint');
+    assert.ok(log3.includes('connectP2p:1') && log3.includes('unmute') && log3.includes('resume'), 'transport starts after confirm');
+    await mgr3.stop();
   }
 
   // --- multi-handler events (v0.6.0): on/off/once/unsubscribe, all handlers run.

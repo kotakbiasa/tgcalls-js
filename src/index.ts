@@ -677,6 +677,18 @@ export class TgCallsClient {
     if (this.callManager) {await this.callManager.stop(); this.callManager = null;}
   }
 
+  /**
+   * Place an outgoing 1-on-1 call and stream `source` into it once the callee
+   * answers. Requires `listenCalls()` first — it installs the P2P call handler
+   * that drives the accept/confirm steps. Returns the Telegram call id.
+   */
+  async callUser(userId: ChatRef, options: { video?: boolean | VideoOptions } = {}): Promise<bigint> {
+    if (!this.callManager) {
+      throw new Error('callUser needs an active call manager — call listenCalls({ source }) first.');
+    }
+    return await this.callManager.call(await this.resolveChatId(userId), options);
+  }
+
   /** Peer user ids of active incoming P2P calls. */
   activeCallPeers(): bigint[] {
     return this.callManager?.activePeers() ?? [];
