@@ -16,7 +16,7 @@ import { NTgCalls, StreamMode, MediaSource, ConnectionState } from 'ntgcalls';
 import type { MTProtoAdapter } from './adapters/types.js';
 import type { AudioSource, TgCallsOptions, VideoOptions } from './types.js';
 import { asBigInt0 } from './adapters/utils.js';
-import { audioDescription, probeVideo, videoDescription } from './media.js';
+import { audioDescription, probeVideo, recordingDescription, videoDescription } from './media.js';
 
 export interface ListenCallsOptions {
   /** Audio streamed into answered calls (file / url / shell). */
@@ -36,6 +36,11 @@ export interface ListenCallsOptions {
    * source with a video stream; the caller must have requested a video call.
    */
   video?: boolean | VideoOptions;
+  /**
+   * Record the call's incoming audio to this path (wav/mp3/opus by extension).
+   * P2P calls record the remote party only — video is not recorded.
+   */
+  record?: string;
   /** Sink for internal warnings. */
   logger?: { error(...args: unknown[]): void };
 }
@@ -121,6 +126,9 @@ export class P2PCallManager {
     this.stopHandler?.();
     this.stopHandler = null;
     for (const s of this.sessions.values()) {
+      if (this.opts.record) {
+        try { await this.ntg.setStreamSources(s.peerId, StreamMode.PLAYBACK, {}); } catch { /* best-effort */ }
+      }
       try { await this.ntg.stop(s.peerId); } catch { /* best-effort */ }
       this.emitState?.(s.peerId, ConnectionState.CLOSED);
     }
@@ -271,10 +279,15 @@ export class P2PCallManager {
     s.queue = [];
 
     // PLAYBACK (inbound) after connect so incoming frames flow; then unmute/resume
-    // or the call connects but carries no audio.
+    // or the call connects but carries no audio. With `record`, the playback mic
+    // becomes the recorder: native mixes remote speakers and pipes PCM to ffmpeg.
+    const recPath = this.opts.record;
     await this.ntg.setStreamSources(s.peerId, StreamMode.PLAYBACK, {
-      microphone: { mediaSource: MediaSource.EXTERNAL, sampleRate: 48000, channelCount: 1, input: '', keepOpen: false },
+      microphone: recPath
+        ? recordingDescription(recPath, 48000, 1, this.opts.ffmpegPath ?? 'ffmpeg')
+        : { mediaSource: MediaSource.EXTERNAL, sampleRate: 48000, channelCount: 1, input: '', keepOpen: false },
     });
+    if (recPath) { this.log.error('[p2p] recording incoming audio -> %s', recPath); }
     await this.ntg.unmute(s.peerId);
     await this.ntg.resume(s.peerId);
   }
@@ -284,6 +297,10 @@ export class P2PCallManager {
     const s = this.sessions.get(callId);
     if (!s) {return;}
     this.sessions.delete(callId);
+    // Close the recorder writer first so ffmpeg finalizes the container.
+    if (this.opts.record) {
+      try { await this.ntg.setStreamSources(s.peerId, StreamMode.PLAYBACK, {}); } catch { /* best-effort */ }
+    }
     try { await this.ntg.stop(s.peerId); } catch { /* best-effort */ }
     // ntg.stop() does not emit a CLOSED transition, so tell consumers explicitly.
     this.emitState?.(s.peerId, ConnectionState.CLOSED);
