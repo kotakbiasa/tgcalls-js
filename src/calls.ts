@@ -14,9 +14,9 @@
 
 import { NTgCalls, StreamMode, MediaSource, ConnectionState } from 'ntgcalls';
 import type { MTProtoAdapter } from './adapters/types.js';
-import type { AudioSource, TgCallsOptions } from './types.js';
+import type { AudioSource, TgCallsOptions, VideoOptions } from './types.js';
 import { asBigInt0 } from './adapters/utils.js';
-import { audioDescription } from './media.js';
+import { audioDescription, probeVideo, videoDescription } from './media.js';
 
 export interface ListenCallsOptions {
   /** Audio streamed into answered calls (file / url / shell). */
@@ -27,8 +27,15 @@ export interface ListenCallsOptions {
   onIncoming?: (info: { userId: bigint; callId: bigint }) => boolean | Promise<boolean>;
   /** ffmpeg binary override. */
   ffmpegPath?: string;
+  /** ffprobe binary override (used when `video` is enabled). */
+  ffprobePath?: string;
   /** Verbose per-step signaling/ICE diagnostics (default false). */
   debug?: boolean;
+  /**
+   * Send video into the call (Telegram 1:1 video call). Requires a file/url
+   * source with a video stream; the caller must have requested a video call.
+   */
+  video?: boolean | VideoOptions;
   /** Sink for internal warnings. */
   logger?: { error(...args: unknown[]): void };
 }
@@ -187,10 +194,24 @@ export class P2PCallManager {
     // createP2pCall MUST precede initExchange; the native call id is the peer id.
     await this.ntg.createP2pCall(peerId);
     step('createP2pCall ok');
-    const mediaOpts = { client: {} as never, ffmpegPath: this.opts.ffmpegPath } as TgCallsOptions;
-    await this.ntg.setStreamSources(peerId, StreamMode.CAPTURE, {
-      microphone: audioDescription(this.opts.source, mediaOpts),
-    });
+    const mediaOpts = { client: {} as never, ffmpegPath: this.opts.ffmpegPath, ffprobePath: this.opts.ffprobePath } as TgCallsOptions;
+    const media: Record<string, unknown> = { microphone: audioDescription(this.opts.source, mediaOpts) };
+    // setStreamSources REPLACES every device, so the camera must be included in
+    // the same description as the microphone. Telegram 1:1 calls can be video
+    // calls (PhoneCallRequested.video); the native core already registers camera
+    // tracks for P2P, only the source has to be provided here.
+    if (this.opts.video && this.opts.source.kind !== 'shell') {
+      const targetOpts = typeof this.opts.video === 'object' ? this.opts.video : {};
+      const srcPath = this.opts.source.kind === 'file' ? this.opts.source.path : this.opts.source.url;
+      const probed = await probeVideo(srcPath, mediaOpts, targetOpts);
+      media.camera = videoDescription(
+        this.opts.source,
+        { ...probed, ...targetOpts, width: probed.width, height: probed.height, fps: probed.fps },
+        mediaOpts,
+      );
+      step(`camera ${probed.width}x${probed.height}@${probed.fps} peerVideo=${String(pc.video)}`);
+    }
+    await this.ntg.setStreamSources(peerId, StreamMode.CAPTURE, media as never);
     step('setStreamSources ok');
 
     const dh = await this.adapter.getDhConfig!();
