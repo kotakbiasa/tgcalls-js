@@ -127,7 +127,7 @@ export class P2PCallManager {
   private async relayOut(peerId: bigint, data: Buffer): Promise<void> {
     const s = this.findByPeer(peerId);
     if (!s) {return;}
-    this.log.error('[p2p] sigOut peer=%s len=%d', String(peerId), data?.length);
+    this.log.error('[p2p] sigOut peer=%s len=%d hex=%s', String(peerId), data?.length, data?.subarray(0, 44).toString('hex'));
     try { await this.adapter.sendSignalingData!(s.callId, s.accessHash, data); }
     catch (e) { this.log.error('[tgcalls-js] signaling relay error:', e); }
   }
@@ -214,6 +214,9 @@ export class P2PCallManager {
     await this.ntg.exchangeKeys(s.peerId, jsBytes(pc.gAOrB), asBigInt0(pc.keyFingerprint));
     st('exchangeKeys ok');
     const servers = buildRtcServers(pc.connections);
+    const jsonSafe = (_k: string, v: unknown): unknown => typeof v === 'bigint' ? String(v) : (Array.isArray(v) ? `Array(${v.length})` : (Buffer.isBuffer(v) ? `Buf(${v.length})` : v));
+    this.log.error('[p2p] servers=%s', JSON.stringify(servers, jsonSafe));
+    this.log.error('[p2p] rawConn0=%s', JSON.stringify((pc.connections ?? [])[0], jsonSafe));
     const protocol = NTgCalls.getProtocol();
     // customParameters must be valid JSON: an empty string is a PRESENT optional
     // and json::parse("") throws "incomplete JSON" inside the native core.
