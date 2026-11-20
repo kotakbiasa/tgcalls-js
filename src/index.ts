@@ -23,6 +23,7 @@ import type {
   MTProtoAdapter,
   RecordOptions,
   RecordingInfo,
+  RemoteSourceInfo,
   StreamEndInfo,
   TgCallsOptions,
   VideoOptions,
@@ -39,6 +40,8 @@ export interface TgCallsEvents {
   connectionChange: (chatId: bigint, state: ConnectionState) => void | Promise<void>;
   /** Raw TL updates related to group calls (pass-through). */
   update: (update: unknown) => void | Promise<void>;
+  /** A remote participant's stream (camera / microphone / screen) changed state. */
+  remoteSourceChange: (chatId: bigint, source: RemoteSourceInfo) => void | Promise<void>;
 }
 
 export class TgCallsClient {
@@ -458,6 +461,34 @@ export class TgCallsClient {
   }
 
   /**
+   * The four-emoji key fingerprint of the call (both sides must see the same
+   * emojis — the out-of-band check against a man in the middle). Returns `null`
+   * when we are not in that call or the native core has not computed it yet.
+   */
+  async getEmojiFingerprint(chat: ChatRef): Promise<string | null> {
+    const id = await this.resolveChatId(chat);
+    if (!this.calls.has(id) && !this.activeCallPeers().includes(id)) {return null;}
+    try {
+      const emojis = await this.ntg.getEmojisFingerprint(id);
+      return emojis && emojis.length > 0 ? emojis : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** How the native core is currently carrying the media: RTC, STREAM or RTMP. */
+  async getConnectionMode(chat: ChatRef): Promise<string | null> {
+    const id = await this.resolveChatId(chat);
+    try {
+      const mode = await this.ntg.getConnectionMode(id) as unknown as number;
+      const names = ['NONE', 'RTC', 'STREAM', 'RTMP'];
+      return names[mode] ?? String(mode);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Swap the audio source of an active call without leaving (queue support).
    * Use on streamEnd to start the next track in the same call.
    */
@@ -768,6 +799,13 @@ export class TgCallsClient {
     this.ntg.onConnectionChange((chatId: bigint, info: { state: ConnectionState }) => {
       void this.handleNativeConnectionChange(chatId, info);
     });
+
+    // Group/conference participants turning their camera or screen on/off.
+    if (typeof this.ntg.onRemoteSourceChange === 'function') {
+      this.ntg.onRemoteSourceChange((chatId: bigint, source: RemoteSourceInfo) => {
+        this.emit('remoteSourceChange', chatId, source);
+      });
+    }
   }
 
   private async handleStreamEnd(chatId: bigint, type: StreamType): Promise<void> {
@@ -941,6 +979,7 @@ export type {
   MTProtoLike,
   MtcuteLike,
   MTProtoAdapter,
+  RemoteSourceInfo,
   StreamEndInfo,
   TgCallsOptions,
   VideoOptions,

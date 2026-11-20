@@ -2,8 +2,17 @@
  * tgcalls-js — shared types.
  */
 
+import type { StreamDevice, StreamStatus } from 'ntgcalls';
+
 /** Reference to a chat: username, t.me link, raw id, or marked id (-100...). */
 export type ChatRef = string | number | bigint;
+
+/** A remote participant's stream state, as reported by ntgcalls. */
+export interface RemoteSourceInfo {
+  ssrc: number;
+  state: StreamStatus;
+  device: StreamDevice;
+}
 
 /**
  * Minimal MTProto client surface (GramJS / teleproto both satisfy this).

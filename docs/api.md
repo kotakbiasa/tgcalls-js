@@ -185,7 +185,13 @@ activeCalls(): bigint[]                       // marked ids of all active calls
 getCall(chat: ChatRef): ActiveCall | null     // sync; numeric id or previously-resolved alias
 isActive(chat: ChatRef): boolean              // sync; same alias rules
 resolveChatId(chat: ChatRef): Promise<bigint> // username / t.me link / id → marked id
+getEmojiFingerprint(chat: ChatRef): Promise<string | null>  // 4 emojis, null when not in that call
+getConnectionMode(chat: ChatRef): Promise<string | null>    // NONE | RTC | STREAM | RTMP
 ```
+
+`getEmojiFingerprint` returns the four-emoji key check both sides must compare out
+of band (a mismatch means a man in the middle). `getConnectionMode` reports how the
+native core carries the media: direct `RTC`, a Telegram `STREAM`, or `RTMP`.
 
 #### Events
 
@@ -200,6 +206,11 @@ and `once` return an unsubscribe function; `off` removes a specific handler.
 `once` runs a handler a single time then removes it. A handler that throws/rejects
 is logged (via `logger`) and never blocks the other handlers or crashes the process.
 Registering any `streamEnd` handler suppresses auto-leave.
+
+`remoteSourceChange(chatId, { ssrc, state, device })` fires when a remote
+participant turns their camera / screen on or off (the equivalent of
+MadelineProto's `onStreams`) — use it to start a new recording when the camera
+comes on.
 
 ## Types
 

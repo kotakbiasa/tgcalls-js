@@ -378,6 +378,10 @@ async function main(): Promise<void> {
   assert.equal(await tg.unmute('https://t.me/mychannel'), true);
   assert.equal(tg.getCall('@mychannel')?.muted, false);
   assert.equal(typeof await tg.time(-1001234567890), 'number');
+  // Emoji fingerprint / connection mode are call-scoped: null when not callable.
+  assert.equal(await tg.getEmojiFingerprint(-1009999999999), null, 'emoji fingerprint is null outside a call');
+  assert.equal(await tg.getEmojiFingerprint(-1001234567890), null, 'emoji fingerprint is null before the native core has one');
+  assert.equal(await tg.getConnectionMode(-1009999999999), null, 'connection mode is null outside a call');
 
   // --- setSource swaps without rejoin
   await tg.setSource(-1001234567890, { kind: 'url', url: 'http://example.com/a.mp3' });
