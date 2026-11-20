@@ -762,7 +762,7 @@ async function main(): Promise<void> {
       setStreamSources: async (_id: bigint, mode: number) => { log.push(`setStream:${mode}`); },
       initExchange: async (_id: bigint, dh: any, gaHash: any) => { log.push('initExchange'); if (Array.isArray(dh?.p) && Array.isArray(dh?.random) && Array.isArray(gaHash)) { log.push('initExchange:arrays'); } return Buffer.alloc(256, 2); },
       exchangeKeys: async (_id: bigint, gAOrB: any) => { log.push('exchangeKeys'); if (Array.isArray(gAOrB)) { log.push('exchangeKeys:array'); } return { keyFingerprint: 0n, gAOrB: Buffer.alloc(0) }; },
-      connectP2p: async (_id: bigint, servers: unknown[], _v: unknown, _p: unknown, custom: string) => { log.push(`connectP2p:${servers.length}`); log.push(`connectP2p custom ok:${custom === '{}'}`); },
+      connectP2p: async (_id: bigint, servers: unknown[], versions: any, _p: unknown, custom: string) => { log.push(`connectP2p:${servers.length}`); log.push(`connectP2p custom ok:${custom === '{}'}`); log.push(`connectP2p v2:${Array.isArray(versions) && versions.every((v: string) => v === '8.0.0' || v === '9.0.0')}`); },
       sendSignalingData: async (_id: bigint, data: any) => { log.push(`ntgSignal:${data.length}`); if (Array.isArray(data)) { log.push('ntgSignal:array'); } },
       unmute: async () => { log.push('unmute'); },
       resume: async () => { log.push('resume'); },
@@ -800,6 +800,7 @@ async function main(): Promise<void> {
     assert.ok(log.includes('exchangeKeys:array'), 'exchangeKeys receives a JS Array');
     assert.ok(log.includes('connectP2p:1'), 'connectP2p with 1 RTC server');
     assert.ok(log.includes('connectP2p custom ok:true'), 'customParameters is valid JSON (not empty string)');
+    assert.ok(log.includes('connectP2p v2:true'), 'signaling version restricted to V2 (external/MTProto, not SCTP)');
     assert.ok(log.includes('unmute') && log.includes('resume'), 'unmute+resume after connect');
     assert.ok(log.includes('ntgSignal:10'), 'queued signaling flushed after connect');
     assert.ok(log.includes('ntgSignal:array'), 'native signaling data passed as JS Array');

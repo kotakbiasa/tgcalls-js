@@ -218,9 +218,17 @@ export class P2PCallManager {
     this.log.error('[p2p] servers=%s', JSON.stringify(servers, jsonSafe));
     this.log.error('[p2p] rawConn0=%s', JSON.stringify((pc.connections ?? [])[0], jsonSafe));
     const protocol = NTgCalls.getProtocol();
+    // Signaling version: V3 (12.0.0/13.0.0) makes ntgcalls route signaling over an
+    // SCTP data channel (SignalingSctpConnection), which is NOT the transport Telegram
+    // uses for 1:1 calls — signaling arrives over MTProto (phone.sendSignalingData /
+    // UpdatePhoneCallSignalingData). Force the V2 legacy external signaling backend.
+    const peerVersions: string[] = Array.isArray(pc.protocol?.libraryVersions) ? pc.protocol.libraryVersions : [];
+    const v2 = peerVersions.filter((v) => v === '8.0.0' || v === '9.0.0');
+    const versions = v2.length ? v2 : ['8.0.0'];
+    this.log.error('[p2p] peerVersions=%s -> using=%s', JSON.stringify(peerVersions), JSON.stringify(versions));
     // customParameters must be valid JSON: an empty string is a PRESENT optional
     // and json::parse("") throws "incomplete JSON" inside the native core.
-    await this.ntg.connectP2p(s.peerId, servers as never, protocol.libraryVersions, pc.p2pAllowed ?? true, '{}');
+    await this.ntg.connectP2p(s.peerId, servers as never, versions, pc.p2pAllowed ?? true, '{}');
     st(`connectP2p ok servers=${servers.length}`);
 
     s.connInit = true;
