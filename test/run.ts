@@ -758,10 +758,10 @@ async function main(): Promise<void> {
     const fakeNtg: any = {
       createP2pCall: async (id: bigint) => { log.push(`createP2pCall:${id}`); },
       setStreamSources: async (_id: bigint, mode: number) => { log.push(`setStream:${mode}`); },
-      initExchange: async () => { log.push('initExchange'); return Buffer.alloc(256, 2); },
-      exchangeKeys: async () => { log.push('exchangeKeys'); return { keyFingerprint: 0n, gAOrB: Buffer.alloc(0) }; },
+      initExchange: async (_id: bigint, dh: any, gaHash: any) => { log.push('initExchange'); if (Array.isArray(dh?.p) && Array.isArray(dh?.random) && Array.isArray(gaHash)) { log.push('initExchange:arrays'); } return Buffer.alloc(256, 2); },
+      exchangeKeys: async (_id: bigint, gAOrB: any) => { log.push('exchangeKeys'); if (Array.isArray(gAOrB)) { log.push('exchangeKeys:array'); } return { keyFingerprint: 0n, gAOrB: Buffer.alloc(0) }; },
       connectP2p: async (_id: bigint, servers: unknown[]) => { log.push(`connectP2p:${servers.length}`); },
-      sendSignalingData: async (_id: bigint, data: Buffer) => { log.push(`ntgSignal:${data.length}`); },
+      sendSignalingData: async (_id: bigint, data: any) => { log.push(`ntgSignal:${data.length}`); if (Array.isArray(data)) { log.push('ntgSignal:array'); } },
       unmute: async () => { log.push('unmute'); },
       resume: async () => { log.push('resume'); },
       stop: async (id: bigint) => { log.push(`stop:${id}`); },
@@ -784,6 +784,7 @@ async function main(): Promise<void> {
     assert.ok(log.includes('createP2pCall:333'), 'createP2pCall with peer id');
     assert.ok(log.includes('getDhConfig'), 'getDhConfig fetched');
     assert.ok(log.includes('initExchange'), 'initExchange ran');
+    assert.ok(log.includes('initExchange:arrays'), 'initExchange receives JS Arrays (ntgcalls bytes quirk)');
     assert.ok(log.includes('acceptCall:256'), 'acceptCall sent with g_b');
 
     await sigCb(111n, Buffer.alloc(10)); // before connect → queued
@@ -793,9 +794,11 @@ async function main(): Promise<void> {
     await phoneCb({ className: 'PhoneCall', id: 111n, accessHash: 222n, gAOrB: Buffer.alloc(256, 2), keyFingerprint: 999n, p2pAllowed: true, connections: [{ id: 1n, ip: '1.2.3.4', ipv6: '', port: 1234, turn: true, stun: false, tcp: false }] });
     await tick();
     assert.ok(log.includes('exchangeKeys'), 'exchangeKeys on confirm');
+    assert.ok(log.includes('exchangeKeys:array'), 'exchangeKeys receives a JS Array');
     assert.ok(log.includes('connectP2p:1'), 'connectP2p with 1 RTC server');
     assert.ok(log.includes('unmute') && log.includes('resume'), 'unmute+resume after connect');
     assert.ok(log.includes('ntgSignal:10'), 'queued signaling flushed after connect');
+    assert.ok(log.includes('ntgSignal:array'), 'native signaling data passed as JS Array');
     assert.deepEqual(mgr.activePeers(), [333n], 'active peer tracked');
 
     fakeNtg._sigCb(333n, Buffer.alloc(5)); // native → Telegram relay

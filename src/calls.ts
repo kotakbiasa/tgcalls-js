@@ -42,6 +42,19 @@ interface P2PSession {
 
 type PhoneCallObj = Record<string, any>;
 
+/**
+ * ntgcalls' JS binding requires a plain JS Array for every `bytes::binary`
+ * parameter (the shipped index.d.ts wrongly declares Buffer). A Buffer or
+ * Uint8Array throws "An array was expected" from the generated NAPI glue
+ * (targets/node/addon.cc.tpl: JsReader<std::vector<T>> -> v.As<Napi::Array>()).
+ * Verified on ntgcalls 3.0.7 and 3.1.0-beta01. Return type is declared Buffer
+ * to satisfy the (incorrect) upstream typings while passing an Array at runtime.
+ */
+function jsBytes(v: Uint8Array | number[]): Buffer {
+  return Array.from(v as Uint8Array) as unknown as Buffer;
+}
+
+
 function buildRtcServers(connections: PhoneCallObj[] | undefined): unknown[] {
   const servers: unknown[] = [];
   for (const conn of connections ?? []) {
@@ -56,7 +69,7 @@ function buildRtcServers(connections: PhoneCallObj[] | undefined): unknown[] {
         turn: conn.turn ?? false,
         stun: conn.stun ?? false,
         tcp: conn.tcp ?? false,
-        peerTag: conn.peerTag,
+        peerTag: conn.peerTag ? jsBytes(conn.peerTag) : undefined,
       });
     } catch { /* skip malformed endpoint */ }
   }
@@ -121,7 +134,7 @@ export class P2PCallManager {
     const s = this.sessions.get(callId);
     if (!s) {return;}
     if (!s.connInit) { s.queue.push(data); return; }
-    try { await this.ntg.sendSignalingData(s.peerId, data); }
+    try { await this.ntg.sendSignalingData(s.peerId, jsBytes(data)); }
     catch (e) { this.log.error('[tgcalls-js] sendSignalingData error:', e); }
   }
 
@@ -164,7 +177,7 @@ export class P2PCallManager {
     });
 
     const dh = await this.adapter.getDhConfig!();
-    const gB = await this.ntg.initExchange(peerId, { g: dh.g, p: dh.p, random: dh.random }, Buffer.from(pc.gAHash));
+    const gB = await this.ntg.initExchange(peerId, { g: dh.g, p: jsBytes(dh.p), random: jsBytes(dh.random) }, jsBytes(pc.gAHash));
     const protocol = NTgCalls.getProtocol();
     await this.adapter.acceptCall!(callId, accessHash, gB, protocol);
   }
@@ -176,14 +189,14 @@ export class P2PCallManager {
     s.p2pStarted = true;
     s.accessHash = BigInt(pc.accessHash);
 
-    await this.ntg.exchangeKeys(s.peerId, Buffer.from(pc.gAOrB), BigInt(pc.keyFingerprint));
+    await this.ntg.exchangeKeys(s.peerId, jsBytes(pc.gAOrB), BigInt(pc.keyFingerprint));
     const servers = buildRtcServers(pc.connections);
     const protocol = NTgCalls.getProtocol();
     await this.ntg.connectP2p(s.peerId, servers as never, protocol.libraryVersions, pc.p2pAllowed ?? true, '');
 
     s.connInit = true;
     for (const queued of s.queue) {
-      try { await this.ntg.sendSignalingData(s.peerId, queued); }
+      try { await this.ntg.sendSignalingData(s.peerId, jsBytes(queued)); }
       catch (e) { this.log.error('[tgcalls-js] queued signaling error:', e); }
     }
     s.queue = [];
