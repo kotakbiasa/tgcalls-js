@@ -329,10 +329,17 @@ export class MtcuteAdapter implements MTProtoAdapter {
   /** phone.requestCall takes InputUser; resolvePeer returns inputPeerUser. */
   private async inputUser(userId: bigint): Promise<Record<string, unknown>> {
     if (typeof this.client.resolvePeer === 'function') {
-      const peer = await this.client.resolvePeer(userId) as Record<string, unknown>;
+      // mtcute writes userId with int53(): a bigint there throws "Cannot mix
+      // BigInt and other types", so resolve with a number (or a string).
+      const ref = userId <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(userId) : userId.toString();
+      const peer = await this.client.resolvePeer(ref) as Record<string, unknown>;
       if (peer?._ === 'inputUser') {return peer;}
       if (peer?.userId !== undefined) {
-        return { _: 'inputUser', userId: peer.userId, accessHash: peer.accessHash };
+        return {
+          _: 'inputUser',
+          userId: Number(asBigInt0(peer.userId)),
+          accessHash: peer.accessHash,
+        };
       }
     }
     throw new Error('Cannot resolve an InputUser for the callee — cache the peer first (getUser) or pass a numeric id.');
