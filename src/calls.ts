@@ -12,7 +12,9 @@
  *   Signaling relays both ways; PhoneCallDiscarded tears down.
  */
 
-import { NTgCalls, StreamMode, MediaSource, ConnectionState } from 'ntgcalls';
+import fs from 'node:fs';
+import { spawn } from 'node:child_process';
+import { NTgCalls, StreamMode, MediaSource, ConnectionState, StreamDevice } from 'ntgcalls';
 import type { MTProtoAdapter } from './adapters/types.js';
 import type { AudioSource, TgCallsOptions, VideoOptions } from './types.js';
 import { asBigInt0 } from './adapters/utils.js';
@@ -37,12 +39,23 @@ export interface ListenCallsOptions {
    */
   video?: boolean | VideoOptions;
   /**
-   * Record the call's incoming audio to this path (wav/mp3/opus by extension).
-   * P2P calls record the remote party only — video is not recorded.
+   * Record the call. A string records the remote party's audio to that path.
+   * Pass an object to also capture the remote camera: `.mp4`/`.mkv` outputs mux
+   * video+audio, any other extension records audio only.
    */
-  record?: string;
+  record?: string | CallRecordOptions;
   /** Sink for internal warnings. */
   logger?: { error(...args: unknown[]): void };
+}
+
+export interface CallRecordOptions {
+  /** Output file. `.mp4`/`.mkv` = video+audio; other extensions = audio only. */
+  path: string;
+  /**
+   * Capture the remote camera (default: true for .mp4/.mkv). The native engine
+   * delivers raw I420 frames; the wrapper muxes them with the recorded audio.
+   */
+  video?: boolean | { width?: number; height?: number; fps?: number };
 }
 
 interface P2PSession {
@@ -53,6 +66,19 @@ interface P2PSession {
   connInit: boolean;
   queue: Buffer[];
   startedAt: number;
+  /** Active recording state for this call (video frames + finalize info). */
+  record?: ActiveRecording;
+}
+
+interface ActiveRecording {
+  outPath: string;
+  audioPath: string;
+  rawPath: string;
+  fd: number;
+  width: number;
+  height: number;
+  fps: number;
+  frames: number;
 }
 
 type PhoneCallObj = Record<string, any>;
@@ -96,6 +122,8 @@ export class P2PCallManager {
   private stopHandler: (() => void) | null = null;
   private readonly log: { error(...args: unknown[]): void };
   private readonly debug: boolean;
+  /** Normalized `record` option (null when recording is off). */
+  private readonly rec: NormalizedRecord | null;
 
   constructor(
     private readonly ntg: NTgCalls,
@@ -105,6 +133,7 @@ export class P2PCallManager {
   ) {
     this.log = opts.logger ?? { error: console.error.bind(console) };
     this.debug = opts.debug ?? false;
+    this.rec = normalizeRecord(opts.record);
   }
 
   /** Start listening for incoming P2P calls. */
@@ -115,6 +144,21 @@ export class P2PCallManager {
     }
     // Native → Telegram signaling relay (group calls never fire this).
     this.ntg.onSignalingData((chatId: bigint, data: Buffer) => { void this.relayOut(chatId, data); });
+    // Remote video frames (only delivered when a PLAYBACK camera is configured).
+    if (typeof this.ntg.onFrames === 'function') {this.ntg.onFrames((chatId: bigint, mode: StreamMode, device: StreamDevice, frames: any[]) => {
+      if (mode !== StreamMode.PLAYBACK || device !== StreamDevice.CAMERA) {return;}
+      const s = this.findByPeer(chatId);
+      const rec = s?.record;
+      if (!rec || !frames?.length) {return;}
+      for (const f of frames) {
+        if (!f?.data?.length) {continue;}
+        const w = f.frameData?.width ?? 0;
+        const h = f.frameData?.height ?? 0;
+        if (!rec.width && w > 0 && h > 0) { rec.width = w; rec.height = h; }
+        if (w !== rec.width || h !== rec.height) {continue;} // ignore resolution switches
+        try { fs.writeSync(rec.fd, f.data); rec.frames++; } catch { /* disk error → drop frame */ }
+      }
+    });}
     this.stopHandler = a.installCallHandler(
       (pc) => { void this.onPhoneCall(pc as PhoneCallObj); },
       (callId, data) => { void this.onSignalingIn(callId, data); },
@@ -126,10 +170,11 @@ export class P2PCallManager {
     this.stopHandler?.();
     this.stopHandler = null;
     for (const s of this.sessions.values()) {
-      if (this.opts.record) {
+      if (this.rec) {
         try { await this.ntg.setStreamSources(s.peerId, StreamMode.PLAYBACK, {}); } catch { /* best-effort */ }
       }
       try { await this.ntg.stop(s.peerId); } catch { /* best-effort */ }
+      await this.finalizeRecording(s);
       this.emitState?.(s.peerId, ConnectionState.CLOSED);
     }
     this.sessions.clear();
@@ -280,14 +325,33 @@ export class P2PCallManager {
 
     // PLAYBACK (inbound) after connect so incoming frames flow; then unmute/resume
     // or the call connects but carries no audio. With `record`, the playback mic
-    // becomes the recorder: native mixes remote speakers and pipes PCM to ffmpeg.
-    const recPath = this.opts.record;
-    await this.ntg.setStreamSources(s.peerId, StreamMode.PLAYBACK, {
-      microphone: recPath
-        ? recordingDescription(recPath, 48000, 1, this.opts.ffmpegPath ?? 'ffmpeg')
-        : { mediaSource: MediaSource.EXTERNAL, sampleRate: 48000, channelCount: 1, input: '', keepOpen: false },
-    });
-    if (recPath) { this.log.error('[p2p] recording incoming audio -> %s', recPath); }
+    // becomes the recorder (native mixes remote speakers → ffmpeg); enabling a
+    // PLAYBACK camera makes native deliver remote video frames to onFrames().
+    const recOpt = this.rec;
+    if (recOpt) {
+      const playback: Record<string, unknown> = {
+        microphone: recordingDescription(recOpt.audioPath, 48000, 1, this.opts.ffmpegPath ?? 'ffmpeg'),
+      };
+      if (recOpt.video) {
+        const rawPath = `${recOpt.outPath}.video.i420`;
+        s.record = {
+          outPath: recOpt.outPath, audioPath: recOpt.audioPath, rawPath,
+          fd: fs.openSync(rawPath, 'w'),
+          width: recOpt.width ?? 0, height: recOpt.height ?? 0, fps: recOpt.fps, frames: 0,
+        };
+        playback.camera = {
+          mediaSource: MediaSource.EXTERNAL,
+          width: recOpt.width ?? 0, height: recOpt.height ?? 0, fps: recOpt.fps,
+          input: '', keepOpen: false,
+        };
+      }
+      await this.ntg.setStreamSources(s.peerId, StreamMode.PLAYBACK, playback as never);
+      this.log.error('[p2p] recording -> %s (%s)', recOpt.outPath, recOpt.video ? 'video+audio' : 'audio only');
+    } else {
+      await this.ntg.setStreamSources(s.peerId, StreamMode.PLAYBACK, {
+        microphone: { mediaSource: MediaSource.EXTERNAL, sampleRate: 48000, channelCount: 1, input: '', keepOpen: false },
+      });
+    }
     await this.ntg.unmute(s.peerId);
     await this.ntg.resume(s.peerId);
   }
@@ -298,14 +362,84 @@ export class P2PCallManager {
     if (!s) {return;}
     this.sessions.delete(callId);
     // Close the recorder writer first so ffmpeg finalizes the container.
-    if (this.opts.record) {
+    if (this.rec) {
       try { await this.ntg.setStreamSources(s.peerId, StreamMode.PLAYBACK, {}); } catch { /* best-effort */ }
     }
     try { await this.ntg.stop(s.peerId); } catch { /* best-effort */ }
+    await this.finalizeRecording(s);
     // ntg.stop() does not emit a CLOSED transition, so tell consumers explicitly.
     this.emitState?.(s.peerId, ConnectionState.CLOSED);
     const duration = Math.floor((Date.now() - s.startedAt) / 1000);
     try { await this.adapter.discardCall!(callId, s.accessHash, duration, pc.reason, 0n); }
     catch { /* peer already gone */ }
   }
+
+  /**
+   * Close the raw video sink and mux it with the recorded audio. Runs after the
+   * playback writer is closed so the wav container is final.
+   */
+  private async finalizeRecording(s: P2PSession): Promise<void> {
+    const rec = s.record;
+    if (!rec) {return;}
+    s.record = undefined;
+    try { fs.closeSync(rec.fd); } catch { /* already closed */ }
+    if (!rec.width || !rec.height || !rec.frames) {
+      fs.rmSync(rec.rawPath, { force: true });
+      this.log.error('[p2p] recording dropped: no video frames received');
+      return;
+    }
+    try {
+      await runProcess(this.opts.ffmpegPath ?? 'ffmpeg', [
+        '-y', '-f', 'rawvideo', '-pix_fmt', 'yuv420p', '-s', `${rec.width}x${rec.height}`, '-r', String(rec.fps || 25),
+        '-i', rec.rawPath, '-i', rec.audioPath,
+        '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p',
+        '-c:a', 'aac', '-b:a', '96k', '-shortest', rec.outPath,
+      ]);
+      this.log.error('[p2p] recording saved -> %s (%dx%d, %d frames)', rec.outPath, rec.width, rec.height, rec.frames);
+    } catch (e) {
+      this.log.error('[p2p] recording mux failed:', e);
+    } finally {
+      fs.rmSync(rec.rawPath, { force: true });
+      if (rec.audioPath !== rec.outPath) {fs.rmSync(rec.audioPath, { force: true });}
+    }
+  }
+}
+
+interface NormalizedRecord {
+  /** Capture remote video in addition to audio. */
+  video: boolean;
+  /** Final output path. */
+  outPath: string;
+  /** Where the audio writer writes (equals outPath for audio-only recordings). */
+  audioPath: string;
+  width?: number;
+  height?: number;
+  fps: number;
+}
+
+/** Accept the string shorthand (audio only) and the object form (audio+video). */
+function normalizeRecord(r: string | CallRecordOptions | undefined): NormalizedRecord | null {
+  if (!r) {return null;}
+  const path = typeof r === 'string' ? r : r.path;
+  const ext = path.slice(path.lastIndexOf('.')).toLowerCase();
+  const videoExt = ext === '.mp4' || ext === '.mkv' || ext === '.webm';
+  const wanted = typeof r === 'string' ? videoExt : (r.video ?? videoExt);
+  const opts = typeof r === 'object' && typeof r.video === 'object' ? r.video : {};
+  return {
+    video: wanted !== false,
+    outPath: path,
+    audioPath: wanted !== false ? `${path}.audio.wav` : path,
+    width: opts.width,
+    height: opts.height,
+    fps: opts.fps ?? 25,
+  };
+}
+
+/** Run a child process to completion, rejecting on a non-zero exit. */
+function runProcess(cmd: string, args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const p = spawn(cmd, args, { stdio: 'ignore' });
+    p.on('error', reject);
+    p.on('exit', (code) => { if (code === 0) {resolve();} else {reject(new Error(`${cmd} exited with code ${code}`));} });
+  });
 }
