@@ -12,7 +12,7 @@
  *   Signaling relays both ways; PhoneCallDiscarded tears down.
  */
 
-import { NTgCalls, StreamMode, MediaSource } from 'ntgcalls';
+import { NTgCalls, StreamMode, MediaSource, ConnectionState } from 'ntgcalls';
 import type { MTProtoAdapter } from './adapters/types.js';
 import type { AudioSource, TgCallsOptions } from './types.js';
 import { asBigInt0 } from './adapters/utils.js';
@@ -89,6 +89,7 @@ export class P2PCallManager {
     private readonly ntg: NTgCalls,
     private readonly adapter: MTProtoAdapter,
     private readonly opts: ListenCallsOptions,
+    private readonly emitState?: (peerId: bigint, state: ConnectionState) => void,
   ) {
     this.log = opts.logger ?? { error: console.error.bind(console) };
     this.debug = opts.debug ?? false;
@@ -114,6 +115,7 @@ export class P2PCallManager {
     this.stopHandler = null;
     for (const s of this.sessions.values()) {
       try { await this.ntg.stop(s.peerId); } catch { /* best-effort */ }
+      this.emitState?.(s.peerId, ConnectionState.CLOSED);
     }
     this.sessions.clear();
   }
@@ -262,6 +264,8 @@ export class P2PCallManager {
     if (!s) {return;}
     this.sessions.delete(callId);
     try { await this.ntg.stop(s.peerId); } catch { /* best-effort */ }
+    // ntg.stop() does not emit a CLOSED transition, so tell consumers explicitly.
+    this.emitState?.(s.peerId, ConnectionState.CLOSED);
     const duration = Math.floor((Date.now() - s.startedAt) / 1000);
     try { await this.adapter.discardCall!(callId, s.accessHash, duration, pc.reason, 0n); }
     catch { /* peer already gone */ }

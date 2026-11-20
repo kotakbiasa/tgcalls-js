@@ -667,7 +667,7 @@ export class TgCallsClient {
     if (this.callManager) {await this.callManager.stop();}
     const mgr = new P2PCallManager(this.ntg, this.adapter, {
       logger: this.opts.logger, ffmpegPath: this.opts.ffmpegPath, ...options,
-    });
+    }, (peerId, state) => { void this.emit('connectionChange', peerId, state); });
     mgr.start();
     this.callManager = mgr;
   }

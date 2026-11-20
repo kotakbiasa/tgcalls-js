@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.1 (2026-11-20)
+
+- Fix: **`connectionChange` now reports the final state** — after a peer hangs up
+  (or `stopListeningCalls()` runs) consumers received no transition, so state maps
+  stayed stuck on `CONNECTED` (2). `P2PCallManager` emits `ConnectionState.CLOSED`
+  (16) for each torn-down peer. Covered by an offline test.
 ## 0.7.0 (2026-11-20)
 
 **P2P calls now work end-to-end — verified live** (ICE `CONNECTED`, audio RTP flowing,

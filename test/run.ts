@@ -778,7 +778,8 @@ async function main(): Promise<void> {
       discardCall: async (_c: bigint, _a: bigint, dur: number) => { log.push(`discardCall:${dur}`); },
       installCallHandler: (onPC: any, onSig: any) => { phoneCb = onPC; sigCb = onSig; return () => {}; },
     };
-    const mgr = new P2PCallManager(fakeNtg, fakeAdapter, { source: { kind: 'file', path: '/tmp/x.mp3' } });
+    const states: Array<[bigint, number]> = [];
+    const mgr = new P2PCallManager(fakeNtg, fakeAdapter, { source: { kind: 'file', path: '/tmp/x.mp3' } }, (p, s) => states.push([p, s as number]));
     mgr.start();
 
     await phoneCb({ className: 'PhoneCallRequested', id: fakeLong('4406014579369388032'), accessHash: fakeLong('8731869724230505667'), adminId: 333n, gAHash: Buffer.alloc(32, 1) });
@@ -815,6 +816,7 @@ async function main(): Promise<void> {
     assert.ok(log.includes('stop:333'), 'native stopped on discard');
     assert.ok(log.some((c) => c.startsWith('discardCall:')), 'discardCall sent');
     assert.deepEqual(mgr.activePeers(), [], 'peer removed after discard');
+    assert.ok(states.some(([p, s]) => p === 333n && s === 16), 'CLOSED (16) emitted to consumers on discard');
     await mgr.stop();
 
     // onIncoming gate rejects → discardCall, no accept.
