@@ -1,6 +1,6 @@
 import type { ChatRef, JoinOptions } from '../types.js';
 import type { MtcuteLike, MTProtoAdapter } from './types.js';
-import { findConnectionParams, sleep } from './utils.js';
+import { asBigInt0, findConnectionParams, sleep } from './utils.js';
 
 export class MtcuteAdapter implements MTProtoAdapter {
   readonly isAdapter = true as const;
@@ -269,5 +269,153 @@ export class MtcuteAdapter implements MTProtoAdapter {
 
   dispose(): void {
     this.removeUpdateHandler();
+    this.removeCallHandler();
+  }
+
+  // --- P2P (1-on-1) calls ------------------------------------------------
+  // mtcute uses plain `{ _: 'method', ... }` objects and `Long` instances for
+  // 64-bit fields; the tl writer reads `val.low`/`val.high`, so a bigint must
+  // be split explicitly (a raw bigint would serialize as 0).
+
+  private callCb: ((update: unknown) => void) | null = null;
+  private callUnsubscribe: (() => void) | null = null;
+
+  /** Build a Long-shaped value for the TL writer. */
+  private static longOf(value: unknown): unknown {
+    if (value === undefined || value === null) {return { low: 0, high: 0, unsigned: false };}
+    if (typeof value === 'bigint') {
+      return {
+        low: Number(value & 0xFFFFFFFFn) | 0,
+        high: Number((value >> 32n) & 0xFFFFFFFFn) | 0,
+        unsigned: false,
+      };
+    }
+    return value;
+  }
+
+  async resolveUserId(user: ChatRef): Promise<bigint> {
+    if (typeof user === 'number' || typeof user === 'bigint') {
+      const n = BigInt(user);
+      return n < 0n ? -n : n;
+    }
+    const s = String(user).trim();
+    if (/^\d+$/.test(s)) {return BigInt(s);}
+    if (typeof this.client.resolvePeer === 'function') {
+      const peer = await this.client.resolvePeer(s.replace(/^@/, '')) as { userId?: unknown; id?: unknown };
+      const id = peer?.userId ?? peer?.id;
+      if (id !== undefined) {return asBigInt0(id);}
+    }
+    throw new Error(`Cannot resolve user "${user}" — pass a numeric user id or a cached username.`);
+  }
+
+  async getDhConfig(): Promise<{ g: number; p: Buffer; random: Buffer }> {
+    const res = await this.client.call({ _: 'messages.getDhConfig', version: 0, randomLength: 256 }) as { g: number; p: Uint8Array; random: Uint8Array };
+    return { g: res.g, p: Buffer.from(res.p), random: Buffer.from(res.random) };
+  }
+
+  private static phoneProtocol(protocol: unknown): Record<string, unknown> {
+    const p = protocol as { minLayer: number; maxLayer: number; udpP2p: boolean; udpReflector: boolean; libraryVersions: string[] };
+    return {
+      _: 'phoneCallProtocol',
+      minLayer: p.minLayer, maxLayer: p.maxLayer, udpP2p: p.udpP2p,
+      udpReflector: p.udpReflector, libraryVersions: p.libraryVersions,
+    };
+  }
+
+  private static inputPhoneCall(callId: bigint, accessHash: bigint): Record<string, unknown> {
+    return { _: 'inputPhoneCall', id: MtcuteAdapter.longOf(callId), accessHash: MtcuteAdapter.longOf(accessHash) };
+  }
+
+  /** phone.requestCall takes InputUser; resolvePeer returns inputPeerUser. */
+  private async inputUser(userId: bigint): Promise<Record<string, unknown>> {
+    if (typeof this.client.resolvePeer === 'function') {
+      const peer = await this.client.resolvePeer(userId) as Record<string, unknown>;
+      if (peer?._ === 'inputUser') {return peer;}
+      if (peer?.userId !== undefined) {
+        return { _: 'inputUser', userId: peer.userId, accessHash: peer.accessHash };
+      }
+    }
+    throw new Error('Cannot resolve an InputUser for the callee — cache the peer first (getUser) or pass a numeric id.');
+  }
+
+  async acceptCall(callId: bigint, accessHash: bigint, gB: Buffer, protocol: unknown): Promise<unknown> {
+    return await this.client.call({
+      _: 'phone.acceptCall',
+      peer: MtcuteAdapter.inputPhoneCall(callId, accessHash),
+      gB,
+      protocol: MtcuteAdapter.phoneProtocol(protocol),
+    });
+  }
+
+  async requestCall(userId: bigint, gAHash: Buffer, protocol: unknown, video: boolean): Promise<unknown> {
+    return await this.client.call({
+      _: 'phone.requestCall',
+      userId: await this.inputUser(userId),
+      randomId: Math.floor(Math.random() * 2 ** 31),
+      gAHash,
+      protocol: MtcuteAdapter.phoneProtocol(protocol),
+      video,
+    });
+  }
+
+  async confirmCall(callId: bigint, accessHash: bigint, gA: Buffer, keyFingerprint: bigint, protocol: unknown): Promise<unknown> {
+    return await this.client.call({
+      _: 'phone.confirmCall',
+      peer: MtcuteAdapter.inputPhoneCall(callId, accessHash),
+      gA,
+      keyFingerprint: MtcuteAdapter.longOf(keyFingerprint),
+      protocol: MtcuteAdapter.phoneProtocol(protocol),
+    });
+  }
+
+  async discardCall(callId: bigint, accessHash: bigint, duration: number, reason: unknown, connectionId: bigint): Promise<void> {
+    await this.client.call({
+      _: 'phone.discardCall',
+      peer: MtcuteAdapter.inputPhoneCall(callId, accessHash),
+      duration,
+      reason: reason ?? { _: 'phoneCallDiscardReasonHangup' },
+      connectionId: MtcuteAdapter.longOf(connectionId),
+    });
+  }
+
+  async sendSignalingData(callId: bigint, accessHash: bigint, data: Buffer): Promise<void> {
+    await this.client.call({
+      _: 'phone.sendSignalingData',
+      peer: MtcuteAdapter.inputPhoneCall(callId, accessHash),
+      data,
+    });
+  }
+
+  installCallHandler(
+    onPhoneCall: (phoneCall: unknown) => void,
+    onSignaling: (phoneCallId: bigint, data: Buffer) => void,
+  ): () => void {
+    if (this.callCb !== null) {return () => this.removeCallHandler();}
+    const handler = (updateContainer: unknown): void => {
+      const container = updateContainer as { update?: Record<string, unknown> } | Record<string, unknown> | undefined;
+      const u = (container?.update ?? container) as Record<string, unknown> | undefined;
+      if (!u) {return;}
+      if (u._ === 'updatePhoneCall' && u.phoneCall) {
+        onPhoneCall(u.phoneCall);
+      } else if (u._ === 'updatePhoneCallSignalingData' && u.data !== undefined && u.phoneCallId !== undefined) {
+        const d = u.data as Uint8Array;
+        onSignaling(asBigInt0(u.phoneCallId), Buffer.from(d));
+      }
+    };
+    const subscription = this.client.onRawUpdate.add(handler);
+    this.callCb = handler;
+    this.callUnsubscribe = typeof subscription === 'function' ? subscription as () => void : null;
+    return () => this.removeCallHandler();
+  }
+
+  private removeCallHandler(): void {
+    if (this.callCb === null) {return;}
+    if (this.callUnsubscribe !== null) {
+      this.callUnsubscribe();
+    } else if (typeof this.client.onRawUpdate.remove === 'function') {
+      this.client.onRawUpdate.remove(this.callCb);
+    }
+    this.callCb = null;
+    this.callUnsubscribe = null;
   }
 }

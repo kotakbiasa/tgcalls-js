@@ -140,7 +140,7 @@ export class P2PCallManager {
   start(): void {
     const a = this.adapter;
     if (!a.installCallHandler || !a.getDhConfig || !a.acceptCall || !a.sendSignalingData || !a.discardCall) {
-      throw new Error('This MTProto adapter does not support P2P calls (need a GramJS/teleproto client).');
+      throw new Error('This MTProto adapter does not support P2P calls (need a GramJS/teleproto or mtcute client with the phone.* methods).');
     }
     // Native → Telegram signaling relay (group calls never fire this).
     this.ntg.onSignalingData((chatId: bigint, data: Buffer) => { void this.relayOut(chatId, data); });
@@ -308,6 +308,9 @@ export class P2PCallManager {
    */
   async call(userId: bigint, opts: { video?: boolean | VideoOptions } = {}): Promise<bigint> {
     const wantVideo = Boolean(opts.video);
+    if (!this.adapter.requestCall || !this.adapter.confirmCall) {
+      throw new Error('This MTProto adapter cannot place outgoing calls (missing phone.requestCall / phone.confirmCall).');
+    }
     const mediaOpts = { client: {} as never, ffmpegPath: this.opts.ffmpegPath, ffprobePath: this.opts.ffprobePath } as TgCallsOptions;
     await this.ntg.createP2pCall(userId);
     const media: Record<string, unknown> = { microphone: audioDescription(this.opts.source, mediaOpts) };

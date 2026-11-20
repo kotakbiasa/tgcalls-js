@@ -226,6 +226,45 @@ async function testRtmpCreateOption(): Promise<void> {
   const mtcuteCreate = mtcuteRequests.find((request) => request._ === 'phone.createGroupCall');
   assert.ok(mtcuteCreate, 'mtcute phone.createGroupCall invoked');
   assert.equal(mtcuteCreate.rtmpStream, true, 'mtcute idle call creation requests RTMP-stream mode');
+
+  // --- mtcute P2P: TL shapes for the call RPCs + update dispatch ---
+  const p2pReqs: any[] = [];
+  let rawCb: any = null;
+  const mtcuteP2p: any = {
+    async call(request: unknown) {
+      const req = request as any;
+      p2pReqs.push(req);
+      if (req._ === 'messages.getDhConfig') { return { g: 3, p: new Uint8Array(256).fill(7), random: new Uint8Array(256).fill(9) }; }
+      if (req._ === 'phone.requestCall') { return { phoneCall: { _: 'phoneCallWaiting', id: 777n, accessHash: 666n } }; }
+      return {};
+    },
+    async resolvePeer() { return { _: 'inputPeerUser', userId: 555n, accessHash: 444n }; },
+    onRawUpdate: { add(cb: any) { rawCb = cb; return () => { rawCb = null; }; } },
+  };
+  const p2pAdapter = new MtcuteAdapter(mtcuteP2p);
+  const dh = await p2pAdapter.getDhConfig();
+  assert.equal(dh.p.length, 256, 'mtcute getDhConfig returns a 256-byte p');
+  const proto = { minLayer: 92, maxLayer: 92, udpP2p: true, udpReflector: true, libraryVersions: ['8.0.0'] };
+  const reqRes = await p2pAdapter.requestCall(555n, Buffer.alloc(32, 1), proto, true) as any;
+  const rq = p2pReqs.find((r) => r._ === 'phone.requestCall')!;
+  assert.equal(rq.userId._, 'inputUser', 'mtcute requestCall converts inputPeerUser → inputUser');
+  assert.equal(rq.protocol._, 'phoneCallProtocol', 'mtcute sends a phoneCallProtocol object');
+  assert.equal(rq.video, true, 'mtcute requestCall forwards video');
+  assert.equal(reqRes.phoneCall.id, 777n, 'mtcute returns the wrapped phoneCall');
+  await p2pAdapter.confirmCall(777n, 666n, Buffer.alloc(256, 2), -1234567890123n, proto);
+  const cf = p2pReqs.find((r) => r._ === 'phone.confirmCall')!;
+  assert.equal(cf.peer._, 'inputPhoneCall', 'mtcute confirmCall wraps inputPhoneCall');
+  assert.equal(cf.gA.length, 256, 'mtcute confirmCall sends g_a');
+  assert.equal(cf.keyFingerprint.low, Number(-1234567890123n & 0xFFFFFFFFn) | 0, 'keyFingerprint is Long-shaped (low half)');
+  let gotCall: any = null;
+  let gotSig: any = null;
+  const offCall = p2pAdapter.installCallHandler((pc) => { gotCall = pc; }, (id, data) => { gotSig = { id, data }; });
+  rawCb!({ _: 'updatePhoneCall', phoneCall: { _: 'phoneCallRequested', id: 777n } });
+  rawCb!({ _: 'updatePhoneCallSignalingData', phoneCallId: 777n, data: new Uint8Array([1, 2, 3]) });
+  assert.equal(gotCall?._, 'phoneCallRequested', 'mtcute routes updatePhoneCall');
+  assert.ok(gotSig?.id === 777n && gotSig.data.length === 3, 'mtcute routes updatePhoneCallSignalingData');
+  offCall();
+  assert.equal(rawCb, null, 'mtcute call handler unsubscribes');
 }
 
 let updateHandler: ((u: unknown) => void) | null = null;
