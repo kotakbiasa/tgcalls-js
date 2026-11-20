@@ -265,6 +265,12 @@ export class GramjsAdapter implements MTProtoAdapter {
     }));
   }
 
+  async getCall(callId: bigint, accessHash: bigint): Promise<unknown> {
+    return await this.client.invoke(new this.Api.phone.GetCall({
+      peer: this.inputPhoneCall(callId, accessHash),
+    }));
+  }
+
   async discardCall(callId: bigint, accessHash: bigint, duration: number, reason: unknown, connectionId: bigint): Promise<void> {
     await this.client.invoke(new this.Api.phone.DiscardCall({
       peer: this.inputPhoneCall(callId, accessHash), duration,

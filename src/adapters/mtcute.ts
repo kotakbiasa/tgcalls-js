@@ -375,6 +375,13 @@ export class MtcuteAdapter implements MTProtoAdapter {
     });
   }
 
+  async getCall(callId: bigint, accessHash: bigint): Promise<unknown> {
+    return await this.client.call({
+      _: 'phone.getCall',
+      peer: MtcuteAdapter.inputPhoneCall(callId, accessHash),
+    });
+  }
+
   async discardCall(callId: bigint, accessHash: bigint, duration: number, reason: unknown, connectionId: bigint): Promise<void> {
     await this.client.call({
       _: 'phone.discardCall',

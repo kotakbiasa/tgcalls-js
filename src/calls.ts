@@ -360,7 +360,23 @@ export class P2PCallManager {
     ) as PhoneCallObj;
     st('confirmCall ok');
     s.p2pStarted = true;
-    await this.startTransport(s, confirmed, st);
+    // phone.confirmCall often returns a PhoneCall with an empty `connections`
+    // list (no STUN/TURN, no peer_tag) — ICE then only sees host candidates and
+    // times out. phone.getCall carries the real RTC servers once confirmed.
+    let finalCall = confirmed;
+    if (!(confirmed as { connections?: unknown[] })?.connections?.length && this.adapter.getCall) {
+      try {
+        const fetched = await this.adapter.getCall(callId, s.accessHash) as PhoneCallObj;
+        const rawFetched = (fetched as { phoneCall?: PhoneCallObj })?.phoneCall ?? fetched;
+        if (rawFetched?.connections?.length) {
+          finalCall = { ...confirmed, connections: rawFetched.connections, protocol: rawFetched.protocol ?? confirmed.protocol } as PhoneCallObj;
+        }
+        st(`getCall servers=${String(rawFetched?.connections?.length ?? 0)}`);
+      } catch (e) {
+        st(`getCall failed: ${(e as Error).message}`);
+      }
+    }
+    await this.startTransport(s, finalCall, st);
   }
 
   /** Connect the native transport and start media (shared by both directions). */

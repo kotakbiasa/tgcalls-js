@@ -38,6 +38,8 @@ export interface MTProtoAdapter {
   requestCall?(userId: bigint, gAHash: Buffer, protocol: unknown, video: boolean): Promise<unknown>;
   /** phone.confirmCall — confirm an outgoing call after the callee accepts. */
   confirmCall?(callId: bigint, accessHash: bigint, gA: Buffer, keyFingerprint: bigint, protocol: unknown): Promise<unknown>;
+  /** phone.getCall — used when a confirmed call comes back without RTC servers. */
+  getCall?(callId: bigint, accessHash: bigint): Promise<unknown>;
   /** phone.discardCall — hang up / reject. */
   discardCall?(callId: bigint, accessHash: bigint, duration: number, reason: unknown, connectionId: bigint): Promise<void>;
   /** phone.sendSignalingData — relay WebRTC signaling to the peer. */
