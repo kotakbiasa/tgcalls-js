@@ -127,6 +127,7 @@ export class P2PCallManager {
   private async relayOut(peerId: bigint, data: Buffer): Promise<void> {
     const s = this.findByPeer(peerId);
     if (!s) {return;}
+    this.log.error('[p2p] sigOut peer=%s len=%d', String(peerId), data?.length);
     try { await this.adapter.sendSignalingData!(s.callId, s.accessHash, data); }
     catch (e) { this.log.error('[tgcalls-js] signaling relay error:', e); }
   }
@@ -134,6 +135,7 @@ export class P2PCallManager {
   private async onSignalingIn(callId: bigint, data: Buffer): Promise<void> {
     const s = this.sessions.get(callId);
     if (!s) {return;}
+    this.log.error('[p2p] sigIn callId=%s len=%d connInit=%s', String(callId), data?.length, String(s.connInit));
     if (!s.connInit) { s.queue.push(data); return; }
     try { await this.ntg.sendSignalingData(s.peerId, jsBytes(data)); }
     catch (e) { this.log.error('[tgcalls-js] sendSignalingData error:', e); }
@@ -203,13 +205,20 @@ export class P2PCallManager {
     if (!s || s.p2pStarted) {return;} // Telegram re-sends PhoneCall; connect exactly once.
     s.p2pStarted = true;
     s.accessHash = asBigInt0(pc.accessHash);
+    const t1 = Date.now();
+    const st = (m: string): void => this.log.error(`[p2p] ${m} +${Date.now() - t1}ms`);
+    this.log.error('[p2p] confirmed id=%s gAOrB.len=%s fingerprint=%s conns=%d p2pAllowed=%s',
+      String(callId), String((pc.gAOrB as unknown as Buffer)?.length), String(pc.keyFingerprint),
+      (pc.connections ?? []).length, String(pc.p2pAllowed));
 
     await this.ntg.exchangeKeys(s.peerId, jsBytes(pc.gAOrB), asBigInt0(pc.keyFingerprint));
+    st('exchangeKeys ok');
     const servers = buildRtcServers(pc.connections);
     const protocol = NTgCalls.getProtocol();
     // customParameters must be valid JSON: an empty string is a PRESENT optional
     // and json::parse("") throws "incomplete JSON" inside the native core.
     await this.ntg.connectP2p(s.peerId, servers as never, protocol.libraryVersions, pc.p2pAllowed ?? true, '{}');
+    st(`connectP2p ok servers=${servers.length}`);
 
     s.connInit = true;
     for (const queued of s.queue) {
