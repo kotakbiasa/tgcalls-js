@@ -28,6 +28,10 @@ core by the pytgcalls team — prebuilt binaries, no compiling).
 - 🧯 **Typed errors**, injectable `logger`, queue-friendly `setSource()`, clean lifecycle (`leave` / `dispose`).
 - ✅ **Offline test suite** — fake MTProto + the real ntgcalls native core, no Telegram credentials needed.
 
+## Roadmap
+
+Sudah jalan vs belum: [`docs/ROADMAP.md`](docs/ROADMAP.md) (tracking: [#25](https://github.com/kotakbiasa/tgcalls-js/issues/25)).
+
 ## Install
 
 ```bash
