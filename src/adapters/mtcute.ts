@@ -404,6 +404,8 @@ export class MtcuteAdapter implements MTProtoAdapter {
       if (!u) {return;}
       if (u._ === 'updatePhoneCall' && u.phoneCall) {
         onPhoneCall(u.phoneCall);
+      } else if (u.className === 'UpdatePhoneCall' && u.phoneCall) {
+        onPhoneCall(u.phoneCall);
       } else if (u._ === 'updatePhoneCallSignalingData' && u.data !== undefined && u.phoneCallId !== undefined) {
         const d = u.data as Uint8Array;
         onSignaling(asBigInt0(u.phoneCallId), Buffer.from(d));

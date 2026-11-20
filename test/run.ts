@@ -858,6 +858,44 @@ async function main(): Promise<void> {
     assert.ok(states.some(([p, s]) => p === 333n && s === 16), 'CLOSED (16) emitted to consumers on discard');
     await mgr.stop();
 
+    // --- mtcute-style dispatch: objects carry `_` (phoneCallRequested), not className
+    const log4: string[] = [];
+    let phoneCb4: any;
+    const fakeNtg4: any = {
+      createP2pCall: async (id: bigint) => { log4.push(`createP2pCall:${id}`); },
+      setStreamSources: async () => { log4.push('setStream'); },
+      getDhConfig: async () => ({ g: 3, p: Buffer.alloc(256, 1), random: Buffer.alloc(256, 1) }),
+      initExchange: async () => { log4.push('initExchange'); return Buffer.alloc(256, 2); },
+      exchangeKeys: async () => ({ keyFingerprint: 1n, gAOrB: Buffer.alloc(256, 3) }),
+      connectP2p: async () => { log4.push('connectP2p'); },
+      sendSignalingData: async () => {},
+      unmute: async () => {}, resume: async () => {},
+      stop: async () => { log4.push('stop'); },
+      onSignalingData: () => {}, onFrames: () => {},
+    };
+    const adapter4: any = {
+      isAdapter: true,
+      getDhConfig: async () => ({ g: 3, p: Buffer.alloc(256, 1), random: Buffer.alloc(256, 1) }),
+      acceptCall: async (_c: bigint, a: bigint, gB: Buffer) => { log4.push(`acceptCall:${String(a)}:${gB.length}`); },
+      sendSignalingData: async () => {},
+      discardCall: async () => {},
+      installCallHandler: (onPC: any) => { phoneCb4 = onPC; return () => {}; },
+    };
+    const mgr4 = new P2PCallManager(fakeNtg4, adapter4, { source: { kind: 'file', path: '/tmp/x.mp3' } });
+    mgr4.start();
+    const longLike = (v: string) => ({ toString: () => v, low: 0, high: 0 });
+    await phoneCb4({
+      _: 'phoneCallRequested', id: longLike('4406014579369388032'),
+      accessHash: longLike('8731869724230505667'), adminId: 333, gAHash: new Uint8Array(32),
+    });
+    await tick();
+    assert.ok(log4.includes('createP2pCall:333'), 'mtcute `_` kind dispatched (phoneCallRequested)');
+    assert.ok(log4.some((c) => c.startsWith('acceptCall:8731869724230505667:256')), 'mtcute Long-like accessHash converted exactly');
+    await phoneCb4({ _: 'phoneCallDiscarded', id: longLike('4406014579369388032') });
+    await tick();
+    assert.ok(log4.includes('stop'), 'mtcute discard tears the native call down');
+    await mgr4.stop();
+
     // onIncoming gate rejects → discardCall, no accept.
     const log2: string[] = [];
     const adapter2 = { ...fakeAdapter, acceptCall: async () => { log2.push('accept'); }, discardCall: async () => { log2.push('discard'); }, installCallHandler: (onPC: any) => { phoneCb = onPC; return () => {}; } };

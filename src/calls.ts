@@ -208,13 +208,17 @@ export class P2PCallManager {
   }
 
   private async onPhoneCall(pc: PhoneCallObj): Promise<void> {
-    const kind = pc?.className;
+    // GramJS/teleproto expose `className` (PhoneCallRequested); mtcute exposes
+    // `_` (phoneCallRequested). Normalise before dispatching.
+    const raw = String((pc as { className?: string; _?: string })?.className ?? (pc as { _?: string })?._ ?? '');
+    const kind = raw.replace(/^phone\./, '').toLowerCase().replace(/[^a-z]/g, '');
     try {
-      if (kind === 'PhoneCallRequested') {await this.acceptIncoming(pc);}
-      else if (kind === 'PhoneCallAccepted') {await this.onAccepted(pc);}
-      else if (kind === 'PhoneCall') {await this.connectP2p(pc);}
-      else if (kind === 'PhoneCallDiscarded') {await this.onDiscarded(pc);}
-      // PhoneCallAccepted / PhoneCallWaiting belong to the outgoing flow (later phase).
+      if (kind === 'phonecallrequested') {await this.acceptIncoming(pc);}
+      else if (kind === 'phonecallaccepted') {await this.onAccepted(pc);}
+      else if (kind === 'phonecall') {await this.connectP2p(pc);}
+      else if (kind === 'phonecalldiscarded') {await this.onDiscarded(pc);}
+      else if (this.debug) { this.log.error('[p2p] ignoring phone call kind=%s', raw); }
+      // PhoneCallWaiting belongs to the outgoing flow (we already have the id).
     } catch (e) {
       this.log.error('[tgcalls-js] call handling error:', e);
     }
