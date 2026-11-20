@@ -138,3 +138,16 @@ await client.sendText('me', 'self-test'); // must log RAW updateMessageID
 
 Session note: a GramJS/teleproto string session can be reused with mtcute via
 `@mtcute/convert` (`convertFromGramjsSession`) + `client.importSession()`.
+
+## Outgoing call: ICE `TIMEOUT` (state 8) right after the peer answers
+
+`phone.confirmCall` can return a `PhoneCall` whose `connections` list is empty —
+no STUN/TURN server, no peer tag. ICE then has host candidates only and fails its
+short receiving timeout (2.5 s) if the callee's answer is still in flight. The
+library retries through `phone.getCall` when the list is empty.
+
+- teleproto/GramJS: `phone.getCall` exists, servers are recovered.
+- **mtcute 0.32**: its TL schema has `phone.getCallConfig` but not `phone.getCall`,
+  so the retry logs `getCall failed: Unknown object phone.getCall` and the call
+  still runs with `servers=0`. It works when the peer answers quickly (host/IPv6
+  candidates suffice) and times out when it does not — retry the call on `state 8`.

@@ -2,11 +2,14 @@
 
 ## Unreleased
 
-- Feat: **outgoing P2P calls** — `callUser(userId, { video })` places a 1-on-1 call
-  and streams the configured `source` into it (mic + optional camera), reusing the
-  same transport/recording path as incoming calls. Verified live.
-- Feat: **video + audio recording of a 1-on-1 call** (`record: { path }`), muxed to
-  mp4 with ffmpeg; audio-only recording also available.
+- Feat: **P2P calls on mtcute** — the adapter now implements accept/request/
+  confirm/signaling/discard and routes `updatePhoneCall` + `updatePhoneCallSignalingData`.
+  Two silent traps fixed: `client.connect()` never starts mtcute's updates loop
+  (use `start()`), and phone-call updates carry `_` (`phoneCallRequested`) while the
+  dispatcher only read `className`.
+- Feat: **video in outgoing calls** — `callUser(userId, { video })` mounts the camera
+  device and asks Telegram for a video call; verified live (ICE `CONNECTED`,
+  `Encoder is active`, audio RTP flowing).
 - Fix: `phone.requestCall` result is wrapped (`{ phoneCall, users }`) — the call id
   was read from the wrapper and came out as `0`.
 - Fix: `phone.confirmCall` has no `gB` field; the adapter now sends `gA` and a raw

@@ -10,7 +10,7 @@ core by the pytgcalls team — prebuilt binaries, no compiling).
 [![Release](https://img.shields.io/github/v/release/kotakbiasa/tgcalls-js)](https://github.com/kotakbiasa/tgcalls-js/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-> **Status: v0.6.0** — audio + video + presentation + idle + playlist/queue + recording + incoming P2P calls + mtcute.
+> **Status: v0.7.1** — audio + video + presentation + idle + playlist/queue + recording + P2P calls both directions (teleproto & mtcute).
 > Verified end-to-end against live Telegram voice chats (audio, video up to
 > 1080p60, and 40-minute idle presence) on Node 20+.
 
