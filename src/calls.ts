@@ -168,18 +168,32 @@ export class P2PCallManager {
 
     const session: P2PSession = { callId, accessHash, peerId, p2pStarted: false, connInit: false, queue: [], startedAt: Date.now() };
     this.sessions.set(callId, session);
+    const t0 = Date.now();
+    const step = (m: string): void => this.log.error(`[p2p] ${m} +${Date.now() - t0}ms`);
+    this.log.error('[p2p] incoming callId=%s peer=%s idType=%s ahType=%s accessHash=%s',
+      String(callId), String(peerId), typeof pc.id, typeof pc.accessHash, String(pc.accessHash));
 
     // createP2pCall MUST precede initExchange; the native call id is the peer id.
     await this.ntg.createP2pCall(peerId);
+    step('createP2pCall ok');
     const mediaOpts = { client: {} as never, ffmpegPath: this.opts.ffmpegPath } as TgCallsOptions;
     await this.ntg.setStreamSources(peerId, StreamMode.CAPTURE, {
       microphone: audioDescription(this.opts.source, mediaOpts),
     });
+    step('setStreamSources ok');
 
     const dh = await this.adapter.getDhConfig!();
+    step(`getDhConfig ok g=${dh.g} p.len=${dh.p?.length} random.len=${dh.random?.length}`);
     const gB = await this.ntg.initExchange(peerId, { g: dh.g, p: jsBytes(dh.p), random: jsBytes(dh.random) }, jsBytes(pc.gAHash));
+    step(`initExchange ok gB.len=${(gB as unknown as Buffer)?.length}`);
     const protocol = NTgCalls.getProtocol();
-    await this.adapter.acceptCall!(callId, accessHash, gB, protocol);
+    try {
+      await this.adapter.acceptCall!(callId, accessHash, gB, protocol);
+      step('acceptCall ok');
+    } catch (e) {
+      step(`acceptCall FAILED: ${(e as Error).message}`);
+      throw e;
+    }
   }
 
   private async connectP2p(pc: PhoneCallObj): Promise<void> {
