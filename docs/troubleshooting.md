@@ -115,3 +115,26 @@ Debug with `setLogLevel(LogLevel.DEBUG)` (from `ntgcalls`) and
 `Using signaling V2 Legacy` → `Decrypting packets` (inbound signaling) →
 `new remote candidate` → `state= 2` (`CONNECTED`) →
 `First audio RTP packet sent to pacer`.
+
+## mtcute: no `INCOMING`, calls do nothing
+
+Two mtcute-specific traps. Both are silent — no error is thrown.
+
+1. **`client.connect()` does not start the updates loop.** `onRawUpdate` is
+   emitted from that loop, so with `connect()` only outgoing RPCs work; no
+   `updatePhoneCall` ever reaches the library. Use `client.start()` (it connects
+   *and* launches the loop). Symptom: the call rings on the phone, the listener
+   logs nothing at all.
+2. **mtcute objects use `_`, GramJS/teleproto use `className`.** Fixed in the
+   library (`kind` is normalised from either), but any custom adapter must do the
+   same: `phoneCallRequested` vs `PhoneCallRequested`.
+
+Verify the loop independently of calls:
+
+```ts
+client.onRawUpdate.add((u) => console.log('RAW', (u?.update ?? u)?._));
+await client.sendText('me', 'self-test'); // must log RAW updateMessageID
+```
+
+Session note: a GramJS/teleproto string session can be reused with mtcute via
+`@mtcute/convert` (`convertFromGramjsSession`) + `client.importSession()`.

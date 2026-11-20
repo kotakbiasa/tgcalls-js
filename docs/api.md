@@ -141,8 +141,11 @@ activeCallPeers(): bigint[]
 them. `ListenCallsOptions`: `source` (AudioSource), `autoAccept` (default true),
 `onIncoming({userId, callId}) => boolean` (gate to accept/reject), `ffmpegPath`,
 `debug` (verbose `[p2p]` signaling/ICE logs, default false), `logger`. The DH exchange + WebRTC run in ntgcalls; the library handles the MTProto
-signaling. Requires a GramJS/teleproto client. One listener per client; calling
+signaling. Requires a GramJS/teleproto or mtcute client. One listener per client; calling
 again replaces it. `stopListeningCalls` hangs up active calls.
+
+> **mtcute:** call `client.start()`, not `client.connect()` — the updates loop
+> (and therefore every `updatePhoneCall`) only runs after `start()`.
 
 #### Outgoing calls
 
