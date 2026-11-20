@@ -755,6 +755,8 @@ async function main(): Promise<void> {
   {
     const tick = () => new Promise((r) => setTimeout(r, 25));
     const log: string[] = [];
+    // teleproto returns TL longs as big-integer objects; BigInt(obj) is lossy (>2^53).
+    const fakeLong = (s: string) => ({ toString: () => s, valueOf: () => Number(s) });
     const fakeNtg: any = {
       createP2pCall: async (id: bigint) => { log.push(`createP2pCall:${id}`); },
       setStreamSources: async (_id: bigint, mode: number) => { log.push(`setStream:${mode}`); },
@@ -771,7 +773,7 @@ async function main(): Promise<void> {
     const fakeAdapter: any = {
       isAdapter: true,
       getDhConfig: async () => { log.push('getDhConfig'); return { g: 3, p: Buffer.alloc(256, 1), random: Buffer.alloc(256, 1) }; },
-      acceptCall: async (_c: bigint, _a: bigint, gB: Buffer) => { log.push(`acceptCall:${gB.length}`); return {}; },
+      acceptCall: async (_c: bigint, a: bigint, gB: Buffer) => { log.push(`acceptCall:${gB.length}`); log.push(`acceptCallAh:${String(a)}`); return {}; },
       sendSignalingData: async (_c: bigint, _a: bigint, data: Buffer) => { log.push(`adapterSignal:${data.length}`); },
       discardCall: async (_c: bigint, _a: bigint, dur: number) => { log.push(`discardCall:${dur}`); },
       installCallHandler: (onPC: any, onSig: any) => { phoneCb = onPC; sigCb = onSig; return () => {}; },
@@ -779,19 +781,20 @@ async function main(): Promise<void> {
     const mgr = new P2PCallManager(fakeNtg, fakeAdapter, { source: { kind: 'file', path: '/tmp/x.mp3' } });
     mgr.start();
 
-    await phoneCb({ className: 'PhoneCallRequested', id: 111n, accessHash: 222n, adminId: 333n, gAHash: Buffer.alloc(32, 1) });
+    await phoneCb({ className: 'PhoneCallRequested', id: fakeLong('4406014579369388032'), accessHash: fakeLong('8731869724230505667'), adminId: 333n, gAHash: Buffer.alloc(32, 1) });
     await tick();
     assert.ok(log.includes('createP2pCall:333'), 'createP2pCall with peer id');
     assert.ok(log.includes('getDhConfig'), 'getDhConfig fetched');
     assert.ok(log.includes('initExchange'), 'initExchange ran');
     assert.ok(log.includes('initExchange:arrays'), 'initExchange receives JS Arrays (ntgcalls bytes quirk)');
     assert.ok(log.includes('acceptCall:256'), 'acceptCall sent with g_b');
+    assert.ok(log.includes('acceptCallAh:8731869724230505667'), 'accessHash converted exactly (big-integer toString)');
 
-    await sigCb(111n, Buffer.alloc(10)); // before connect → queued
+    await sigCb(4406014579369388032n, Buffer.alloc(10)); // before connect → queued
     await tick();
     assert.ok(!log.some((c) => c.startsWith('ntgSignal:')), 'signaling queued before connect');
 
-    await phoneCb({ className: 'PhoneCall', id: 111n, accessHash: 222n, gAOrB: Buffer.alloc(256, 2), keyFingerprint: 999n, p2pAllowed: true, connections: [{ id: 1n, ip: '1.2.3.4', ipv6: '', port: 1234, turn: true, stun: false, tcp: false }] });
+    await phoneCb({ className: 'PhoneCall', id: 4406014579369388032n, accessHash: 8731869724230505667n, gAOrB: Buffer.alloc(256, 2), keyFingerprint: 999n, p2pAllowed: true, connections: [{ id: 1n, ip: '1.2.3.4', ipv6: '', port: 1234, turn: true, stun: false, tcp: false }] });
     await tick();
     assert.ok(log.includes('exchangeKeys'), 'exchangeKeys on confirm');
     assert.ok(log.includes('exchangeKeys:array'), 'exchangeKeys receives a JS Array');
@@ -805,7 +808,7 @@ async function main(): Promise<void> {
     await tick();
     assert.ok(log.includes('adapterSignal:5'), 'native signaling relayed to adapter');
 
-    await phoneCb({ className: 'PhoneCallDiscarded', id: 111n, reason: { className: 'PhoneCallDiscardReasonHangup' } });
+    await phoneCb({ className: 'PhoneCallDiscarded', id: 4406014579369388032n, reason: { className: 'PhoneCallDiscardReasonHangup' } });
     await tick();
     assert.ok(log.includes('stop:333'), 'native stopped on discard');
     assert.ok(log.some((c) => c.startsWith('discardCall:')), 'discardCall sent');

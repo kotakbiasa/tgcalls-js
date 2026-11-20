@@ -290,7 +290,7 @@ export class GramjsAdapter implements MTProtoAdapter {
       if (payload?.phoneCall) {
         onPhoneCall(payload.phoneCall);
       } else if (payload?.phoneCallId !== undefined && payload?.data !== undefined) {
-        onSignaling(BigInt(payload.phoneCallId), Buffer.from(payload.data));
+        onSignaling(asBigInt0(payload.phoneCallId), Buffer.from(payload.data));
       }
     };
     const events = loadEvents();

@@ -15,6 +15,7 @@
 import { NTgCalls, StreamMode, MediaSource } from 'ntgcalls';
 import type { MTProtoAdapter } from './adapters/types.js';
 import type { AudioSource, TgCallsOptions } from './types.js';
+import { asBigInt0 } from './adapters/utils.js';
 import { audioDescription } from './media.js';
 
 export interface ListenCallsOptions {
@@ -60,7 +61,7 @@ function buildRtcServers(connections: PhoneCallObj[] | undefined): unknown[] {
   for (const conn of connections ?? []) {
     try {
       servers.push({
-        id: BigInt(conn.id),
+        id: asBigInt0(conn.id),
         ipv4: conn.ip ?? conn.ipv4 ?? '',
         ipv6: conn.ipv6 ?? '',
         port: conn.port,
@@ -151,9 +152,9 @@ export class P2PCallManager {
   }
 
   private async acceptIncoming(pc: PhoneCallObj): Promise<void> {
-    const callId = BigInt(pc.id);
-    const accessHash = BigInt(pc.accessHash);
-    const peerId = BigInt(pc.adminId);
+    const callId = asBigInt0(pc.id);
+    const accessHash = asBigInt0(pc.accessHash);
+    const peerId = asBigInt0(pc.adminId);
     if (this.sessions.has(callId)) {return;}
 
     const accept = this.opts.autoAccept !== false;
@@ -197,13 +198,13 @@ export class P2PCallManager {
   }
 
   private async connectP2p(pc: PhoneCallObj): Promise<void> {
-    const callId = BigInt(pc.id);
+    const callId = asBigInt0(pc.id);
     const s = this.sessions.get(callId);
     if (!s || s.p2pStarted) {return;} // Telegram re-sends PhoneCall; connect exactly once.
     s.p2pStarted = true;
-    s.accessHash = BigInt(pc.accessHash);
+    s.accessHash = asBigInt0(pc.accessHash);
 
-    await this.ntg.exchangeKeys(s.peerId, jsBytes(pc.gAOrB), BigInt(pc.keyFingerprint));
+    await this.ntg.exchangeKeys(s.peerId, jsBytes(pc.gAOrB), asBigInt0(pc.keyFingerprint));
     const servers = buildRtcServers(pc.connections);
     const protocol = NTgCalls.getProtocol();
     await this.ntg.connectP2p(s.peerId, servers as never, protocol.libraryVersions, pc.p2pAllowed ?? true, '');
@@ -225,7 +226,7 @@ export class P2PCallManager {
   }
 
   private async onDiscarded(pc: PhoneCallObj): Promise<void> {
-    const callId = BigInt(pc.id);
+    const callId = asBigInt0(pc.id);
     const s = this.sessions.get(callId);
     if (!s) {return;}
     this.sessions.delete(callId);
