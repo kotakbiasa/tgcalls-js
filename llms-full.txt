@@ -1,11 +1,10 @@
-# tgcalls-js — full documentation (llms-full.txt)
-# Generated concatenation of README + docs for bulk LLM ingestion.
-# Version 0.7.1 (P2P calls verified live; incoming 1-on-1 calls stream audio). Source of truth: the individual files in this repo.
+# tgcalls-js — full documentation (v0.7.1)
+This file concatenates the whole documentation set for LLM ingestion.
 
 
-==============================================================================
-== Overview & quick start  (README.md)
-==============================================================================
+<!-- ===== README.md ===== -->
+
+# README
 
 # tgcalls-js
 
@@ -28,7 +27,8 @@ core by the pytgcalls team — prebuilt binaries, no compiling).
 - 🎵 **Audio** from a file, direct URL, YouTube (via yt-dlp), or a custom shell PCM pipe.
 - 📃 **Playlist/queue** — `play()` / `enqueue()` / `skip()` / `playOnHold()`; tracks auto-advance, hold music loops while the queue is empty.
 - ⏺️ **Recording** — `startRecording()` / `stopRecording()`; records incoming call audio (native mix of all speakers) to wav/mp3/opus via ffmpeg.
-- 📞 **Incoming P2P calls** *(verified live)* — `listenCalls()` answers 1-on-1 voice calls and streams audio into them.
+- 📞 **P2P calls, both directions** *(verified live)* — `listenCalls()` answers 1-on-1 calls, `callUser()` places one; audio + video.
+- ⏺️ **P2P recording** — audio, or video+audio muxed to mp4 (`record: {path}`).
 - 🎬 **Video** from the same source (`video: {width, height, fps}`), camera or presentation channel.
 - 🖥️ **Screen share** via `startPresentation()` / `stopPresentation()`.
 - 🧍 **Idle presence** via `joinIdle()` — stay in a call with no media (stable on UDP-capable hosts).
@@ -191,9 +191,10 @@ See [`AGENTS.md`](AGENTS.md) for conventions and pitfalls.
 MIT for this wrapper. [`ntgcalls`](https://github.com/pytgcalls/ntgcalls) is
 LGPL-3.0 (its own repo, installed as a dependency).
 
-==============================================================================
-== Getting started  (docs/getting-started.md)
-==============================================================================
+
+<!-- ===== docs/getting-started.md ===== -->
+
+# Getting started
 
 # Getting started
 
@@ -287,9 +288,10 @@ npm run smoke
 Next: the [Guide](guide.md) for video, presentation, idle, and adapters, or the
 [API reference](api.md).
 
-==============================================================================
-== Guide  (docs/guide.md)
-==============================================================================
+
+<!-- ===== docs/guide.md ===== -->
+
+# Guide
 
 # Guide
 
@@ -507,9 +509,10 @@ try {
 All library errors extend `TgCallsError` (which extends `Error`). See the
 [API reference](api.md#errors).
 
-==============================================================================
-== API reference  (docs/api.md)
-==============================================================================
+
+<!-- ===== docs/api.md ===== -->
+
+# API reference
 
 # API reference
 
@@ -655,8 +658,31 @@ them. `ListenCallsOptions`: `source` (AudioSource), `autoAccept` (default true),
 `onIncoming({userId, callId}) => boolean` (gate to accept/reject), `ffmpegPath`,
 `debug` (verbose `[p2p]` signaling/ICE logs, default false), `logger`. The DH exchange + WebRTC run in ntgcalls; the library handles the MTProto
 signaling. Requires a GramJS/teleproto client. One listener per client; calling
-again replaces it. `stopListeningCalls` hangs up active calls. Outgoing calls and
-multi-party conference are not yet supported.
+again replaces it. `stopListeningCalls` hangs up active calls.
+
+#### Outgoing calls
+
+```ts
+callUser(userId: ChatRef, options?: { video?: boolean | VideoOptions }): Promise<bigint>
+```
+
+Calls `userId` and streams the same `source` into the call once the callee answers.
+Requires `listenCalls()` first — that installs the update handler which drives the
+accept → confirm steps. Returns the Telegram call id. The call is hung up by
+`stopListeningCalls()` / `dispose()`, or when the peer ends it.
+
+```ts
+await tgcalls.listenCalls({ source: { kind: 'file', path: 'song.mp3' }, video: { width: 640, height: 360, fps: 25 } });
+const callId = await tgcalls.callUser(123456789n, { video: true });
+```
+
+How it works: `initExchange` is called with a `null` gaHash so the native core
+returns `SHA256(g_a)` for `phone.requestCall`; on `PhoneCallAccepted` the library
+calls `exchangeKeys(gB, 0)` (the native core computes the fingerprint) and then
+`phone.confirmCall(gA, keyFingerprint)`. `phone.requestCall` returns
+`USER_PRIVACY_RESTRICTED` when the callee only accepts calls from contacts.
+
+Multi-party conference is not yet supported.
 
 #### Lifecycle
 
@@ -824,9 +850,10 @@ resetTlCache(): void
 loadEvents(...): unknown
 ```
 
-==============================================================================
-== Troubleshooting  (docs/troubleshooting.md)
-==============================================================================
+
+<!-- ===== docs/troubleshooting.md ===== -->
+
+# Troubleshooting
 
 # Troubleshooting
 
@@ -946,9 +973,10 @@ Debug with `setLogLevel(LogLevel.DEBUG)` (from `ntgcalls`) and
 `new remote candidate` → `state= 2` (`CONNECTED`) →
 `First audio RTP packet sent to pacer`.
 
-==============================================================================
-== Agent/contributor guidance  (AGENTS.md)
-==============================================================================
+
+<!-- ===== AGENTS.md ===== -->
+
+# AGENTS.md (contributor notes)
 
 # AGENTS.md
 
@@ -1020,11 +1048,24 @@ Fix: `npm install @ntgcalls/linux-x64@3.0.7 --no-save` (match the `ntgcalls` ver
 Version in `package.json` + a `CHANGELOG.md` entry. Tag `vX.Y.Z` and
 `gh release create vX.Y.Z` (releases via gh API work even when Actions is disabled).
 
-==============================================================================
-== Changelog  (CHANGELOG.md)
-==============================================================================
+
+<!-- ===== CHANGELOG.md ===== -->
+
+# CHANGELOG
 
 # Changelog
+
+## Unreleased
+
+- Feat: **outgoing P2P calls** — `callUser(userId, { video })` places a 1-on-1 call
+  and streams the configured `source` into it (mic + optional camera), reusing the
+  same transport/recording path as incoming calls. Verified live.
+- Feat: **video + audio recording of a 1-on-1 call** (`record: { path }`), muxed to
+  mp4 with ffmpeg; audio-only recording also available.
+- Fix: `phone.requestCall` result is wrapped (`{ phoneCall, users }`) — the call id
+  was read from the wrapper and came out as `0`.
+- Fix: `phone.confirmCall` has no `gB` field; the adapter now sends `gA` and a raw
+  `Buffer` (the native-facing `jsBytes()` array is wrong for MTProto).
 
 ## 0.7.1 (2026-11-20)
 

@@ -142,8 +142,31 @@ them. `ListenCallsOptions`: `source` (AudioSource), `autoAccept` (default true),
 `onIncoming({userId, callId}) => boolean` (gate to accept/reject), `ffmpegPath`,
 `debug` (verbose `[p2p]` signaling/ICE logs, default false), `logger`. The DH exchange + WebRTC run in ntgcalls; the library handles the MTProto
 signaling. Requires a GramJS/teleproto client. One listener per client; calling
-again replaces it. `stopListeningCalls` hangs up active calls. Outgoing calls and
-multi-party conference are not yet supported.
+again replaces it. `stopListeningCalls` hangs up active calls.
+
+#### Outgoing calls
+
+```ts
+callUser(userId: ChatRef, options?: { video?: boolean | VideoOptions }): Promise<bigint>
+```
+
+Calls `userId` and streams the same `source` into the call once the callee answers.
+Requires `listenCalls()` first — that installs the update handler which drives the
+accept → confirm steps. Returns the Telegram call id. The call is hung up by
+`stopListeningCalls()` / `dispose()`, or when the peer ends it.
+
+```ts
+await tgcalls.listenCalls({ source: { kind: 'file', path: 'song.mp3' }, video: { width: 640, height: 360, fps: 25 } });
+const callId = await tgcalls.callUser(123456789n, { video: true });
+```
+
+How it works: `initExchange` is called with a `null` gaHash so the native core
+returns `SHA256(g_a)` for `phone.requestCall`; on `PhoneCallAccepted` the library
+calls `exchangeKeys(gB, 0)` (the native core computes the fingerprint) and then
+`phone.confirmCall(gA, keyFingerprint)`. `phone.requestCall` returns
+`USER_PRIVACY_RESTRICTED` when the callee only accepts calls from contacts.
+
+Multi-party conference is not yet supported.
 
 #### Lifecycle
 

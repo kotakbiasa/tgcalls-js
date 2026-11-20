@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Feat: **outgoing P2P calls** — `callUser(userId, { video })` places a 1-on-1 call
+  and streams the configured `source` into it (mic + optional camera), reusing the
+  same transport/recording path as incoming calls. Verified live.
+- Feat: **video + audio recording of a 1-on-1 call** (`record: { path }`), muxed to
+  mp4 with ffmpeg; audio-only recording also available.
+- Fix: `phone.requestCall` result is wrapped (`{ phoneCall, users }`) — the call id
+  was read from the wrapper and came out as `0`.
+- Fix: `phone.confirmCall` has no `gB` field; the adapter now sends `gA` and a raw
+  `Buffer` (the native-facing `jsBytes()` array is wrong for MTProto).
+
 ## 0.7.1 (2026-11-20)
 
 - Fix: **`connectionChange` now reports the final state** — after a peer hangs up
