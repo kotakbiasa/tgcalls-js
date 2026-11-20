@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.0 (2026-11-20)
 
 - Feat: **P2P calls on mtcute** — the adapter now implements accept/request/
   confirm/signaling/discard and routes `updatePhoneCall` + `updatePhoneCallSignalingData`.

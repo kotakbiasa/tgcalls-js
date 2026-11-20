@@ -1,4 +1,4 @@
-# tgcalls-js — full documentation (v0.7.1)
+# tgcalls-js — full documentation (v0.8.0)
 This file concatenates the whole documentation set for LLM ingestion.
 
 
@@ -1094,7 +1094,7 @@ Version in `package.json` + a `CHANGELOG.md` entry. Tag `vX.Y.Z` and
 
 # Changelog
 
-## Unreleased
+## 0.8.0 (2026-11-20)
 
 - Feat: **P2P calls on mtcute** — the adapter now implements accept/request/
   confirm/signaling/discard and routes `updatePhoneCall` + `updatePhoneCallSignalingData`.
