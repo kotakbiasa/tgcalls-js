@@ -1,4 +1,4 @@
-import type { ChatRef, JoinOptions } from '../types.js';
+import type { ChatRef, EditParticipantOptions, JoinOptions } from '../types.js';
 import type { GroupCallInfo, MtcuteLike, MTProtoAdapter } from './types.js';
 import type { CallEligibilityInfo } from '../eligibility.js';
 import type { BroadcastChunkRequest, BroadcastChunkResult } from '../broadcast.js';
@@ -235,7 +235,40 @@ export class MtcuteAdapter implements MTProtoAdapter {
     throw new Error('No active voice chat in this chat. Start one first, or pass allowCreate: true.');
   }
 
+  private async resolveInputPeer(ref: ChatRef | 'self'): Promise<unknown> {
+    if (ref === 'self') {
+      return { _: 'inputPeerSelf' };
+    }
+    if (typeof this.client.resolvePeer === 'function') {
+      const normalized = typeof ref === 'string'
+        ? ref.trim().replace(/^https?:\/\/t\.me\//i, '').replace(/^@/, '').replace(/\/+$/, '')
+        : ref;
+      const candidates: unknown[] = typeof normalized === 'bigint'
+        ? (normalized <= BigInt(Number.MAX_SAFE_INTEGER) && normalized >= BigInt(Number.MIN_SAFE_INTEGER)
+            ? [Number(normalized), normalized.toString(), normalized]
+            : [normalized.toString(), normalized])
+        : [normalized];
+      for (const candidate of candidates) {
+        try {
+          const peer = await this.client.resolvePeer(candidate);
+          if (peer) {return peer;}
+        } catch { /* try next */ }
+      }
+    }
+    const id = await this.resolveChatId(ref);
+    if (id <= -1000000000000n) {
+      return { _: 'inputPeerChannel', channelId: Number(-id - 1000000000000n), accessHash: MtcuteAdapter.longOf(0n) };
+    }
+    if (id < 0n) {
+      return { _: 'inputPeerChat', chatId: Number(-id) };
+    }
+    return { _: 'inputPeerUser', userId: Number(id), accessHash: MtcuteAdapter.longOf(0n) };
+  }
+
   async joinGroupCall(inputCall: unknown, joinParams: string, options: JoinOptions): Promise<unknown> {
+    const joinAs = options.joinAs !== undefined
+      ? await this.resolveInputPeer(options.joinAs)
+      : { _: 'inputPeerSelf' };
     return await this.client.call({
       _: 'phone.joinGroupCall',
       call: inputCall,
@@ -245,7 +278,7 @@ export class MtcuteAdapter implements MTProtoAdapter {
       },
       muted: options.muted === true,
       videoStopped: options.videoStopped ?? true,
-      joinAs: { _: 'inputPeerSelf' },
+      joinAs,
       ...(options.inviteHash !== undefined ? { inviteHash: options.inviteHash } : {}),
     });
   }
@@ -390,6 +423,25 @@ export class MtcuteAdapter implements MTProtoAdapter {
 
   normalizeParticipants(raw: unknown[]): ParticipantInfo[] {
     return normalizeParticipantList(raw, this.participantMinCache);
+  }
+
+  async editGroupCallParticipant(
+    call: unknown,
+    participant: ChatRef | 'self',
+    options: EditParticipantOptions,
+  ): Promise<unknown> {
+    const peer = await this.resolveInputPeer(participant);
+    return await this.client.call({
+      _: 'phone.editGroupCallParticipant',
+      call: this.toInputGroupCall(call),
+      participant: peer,
+      ...(options.muted !== undefined ? { muted: options.muted } : {}),
+      ...(options.volume !== undefined ? { volume: Math.round(options.volume) } : {}),
+      ...(options.raiseHand !== undefined ? { raiseHand: options.raiseHand } : {}),
+      ...(options.videoStopped !== undefined ? { videoStopped: options.videoStopped } : {}),
+      ...(options.videoPaused !== undefined ? { videoPaused: options.videoPaused } : {}),
+      ...(options.presentationPaused !== undefined ? { presentationPaused: options.presentationPaused } : {}),
+    });
   }
 
   async getParticipants(

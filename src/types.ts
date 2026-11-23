@@ -86,6 +86,8 @@ export interface JoinOptions {
   allowCreate?: boolean;
   /** Invite hash when joining via a call invite link. */
   inviteHash?: string;
+  /** Optional peer to join the voice chat as (e.g. a channel or alias; defaults to self). */
+  joinAs?: ChatRef;
   /** Share video from the same source (file/url) with these parameters. */
   video?: VideoOptions | false;
   /** Join the presentation (screen share) channel for this call. */
@@ -169,6 +171,17 @@ export interface PlaybackControls {
   volume: number;
   speed: number;
   loop: LoopMode;
+}
+
+/** Options for editing a group call participant via phone.editGroupCallParticipant. */
+export interface EditParticipantOptions {
+  muted?: boolean;
+  /** Telegram volume scale (0..20000, where 10000 = 100%). */
+  volume?: number;
+  raiseHand?: boolean;
+  videoStopped?: boolean;
+  videoPaused?: boolean;
+  presentationPaused?: boolean;
 }
 
 /** Options for startRecording(). */

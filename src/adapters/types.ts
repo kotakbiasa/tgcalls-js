@@ -1,4 +1,4 @@
-import type { ChatRef, JoinOptions, MTProtoLike } from '../types.js';
+import type { ChatRef, EditParticipantOptions, JoinOptions, MTProtoLike } from '../types.js';
 import type { CallEligibilityInfo } from '../eligibility.js';
 import type { BroadcastChunkRequest, BroadcastChunkResult } from '../broadcast.js';
 import type { ConferenceInfo, ConferenceJoin, ConferenceRef, ConferenceResult } from '../conference.js';
@@ -52,6 +52,11 @@ export interface MTProtoAdapter {
     options: { ids: bigint[]; sources: number[]; offset: string; limit: number; signal?: AbortSignal },
   ): Promise<ParticipantPage>;
   normalizeParticipants?(raw: unknown[]): ParticipantInfo[];
+  editGroupCallParticipant?(
+    call: unknown,
+    participant: ChatRef | 'self',
+    options: EditParticipantOptions,
+  ): Promise<unknown>;
   getStreamRtmpUrl?(
     chatId: bigint,
     options?: { revoke?: boolean; liveStory?: boolean; signal?: AbortSignal },

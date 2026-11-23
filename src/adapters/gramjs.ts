@@ -1,4 +1,4 @@
-import type { ChatRef, JoinOptions, MTProtoLike } from '../types.js';
+import type { ChatRef, EditParticipantOptions, JoinOptions, MTProtoLike } from '../types.js';
 import type { GroupCallInfo, MTProtoAdapter } from './types.js';
 import type { CallEligibilityInfo } from '../eligibility.js';
 import type { BroadcastChunkRequest, BroadcastChunkResult } from '../broadcast.js';
@@ -177,13 +177,44 @@ export class GramjsAdapter implements MTProtoAdapter {
     throw new Error('No active voice chat in this chat. Start one first, or pass allowCreate: true.');
   }
 
+  private async resolveInputPeer(ref: ChatRef | 'self'): Promise<unknown> {
+    if (ref === 'self') {
+      return new this.Api.InputPeerSelf();
+    }
+    const clientAny = this.client as any;
+    const key = typeof ref === 'string'
+      ? ref.trim().replace(/^https?:\/\/t\.me\//i, '').replace(/^@/, '').replace(/\/+$/, '')
+      : ref;
+    if (typeof clientAny.getInputEntity === 'function') {
+      try {
+        const entity = await clientAny.getInputEntity(key);
+        if (entity) {return entity;}
+      } catch {
+        /* fallback below */
+      }
+    }
+    const id = await this.resolveChatId(ref);
+    if (id <= -1000000000000n && this.Api.InputPeerChannel) {
+      return new this.Api.InputPeerChannel({ channelId: -id - 1000000000000n, accessHash: 0n });
+    }
+    if (id < 0n && this.Api.InputPeerChat) {
+      return new this.Api.InputPeerChat({ chatId: -id });
+    }
+    return this.Api.InputPeerUser
+      ? new this.Api.InputPeerUser({ userId: id, accessHash: 0n })
+      : { className: 'InputPeerUser', userId: id, accessHash: 0n };
+  }
+
   async joinGroupCall(inputCall: unknown, joinParams: string, options: JoinOptions): Promise<unknown> {
+    const joinAs = options.joinAs !== undefined
+      ? await this.resolveInputPeer(options.joinAs)
+      : new this.Api.InputPeerSelf();
     return await this.client.invoke(new this.Api.phone.JoinGroupCall({
       call: inputCall,
       params: new this.Api.DataJSON({ data: joinParams }),
       muted: options.muted === true,
       videoStopped: options.videoStopped ?? true,
-      joinAs: new this.Api.InputPeerSelf(),
+      joinAs,
       ...(options.inviteHash !== undefined ? { inviteHash: options.inviteHash } : {}),
     }));
   }
@@ -331,6 +362,24 @@ export class GramjsAdapter implements MTProtoAdapter {
 
   normalizeParticipants(raw: unknown[]): ParticipantInfo[] {
     return normalizeParticipantList(raw, this.participantMinCache);
+  }
+
+  async editGroupCallParticipant(
+    call: unknown,
+    participant: ChatRef | 'self',
+    options: EditParticipantOptions,
+  ): Promise<unknown> {
+    const peer = await this.resolveInputPeer(participant);
+    return await this.client.invoke(new this.Api.phone.EditGroupCallParticipant({
+      call: this.toInputGroupCall(call),
+      participant: peer,
+      ...(options.muted !== undefined ? { muted: options.muted } : {}),
+      ...(options.volume !== undefined ? { volume: Math.round(options.volume) } : {}),
+      ...(options.raiseHand !== undefined ? { raiseHand: options.raiseHand } : {}),
+      ...(options.videoStopped !== undefined ? { videoStopped: options.videoStopped } : {}),
+      ...(options.videoPaused !== undefined ? { videoPaused: options.videoPaused } : {}),
+      ...(options.presentationPaused !== undefined ? { presentationPaused: options.presentationPaused } : {}),
+    }));
   }
 
   async getParticipants(

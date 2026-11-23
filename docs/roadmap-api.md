@@ -128,3 +128,13 @@ await tg.setSpeed(group, 1.25);  // 0.5..2.0x (-af atempo=1.25, video setpts)
 await tg.setLoop(group, 'all');  // 'off' | 'one' | 'all'
 const controls = tg.getPlaybackControls(group); // { volume, speed, loop }
 ```
+
+## Voice chat participant controls & `joinAs`
+
+```ts
+await tg.join(group, { kind: 'file', path: './song.mp3' }, { joinAs: '@mychannel' });
+const peers = await tg.getParticipants(group);
+await tg.setRaiseHand(group, true);
+await tg.muteParticipant(group, userId, true);         // requires admin rights
+await tg.setParticipantVolume(group, userId, 150);     // 0..200% (Telegram 0..20000)
+```

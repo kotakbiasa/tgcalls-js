@@ -18,6 +18,7 @@ import type {
   ActiveCall,
   AudioSource,
   ChatRef,
+  EditParticipantOptions,
   JoinOptions,
   JoinResult,
   LoopMode,
@@ -919,6 +920,50 @@ export class TgCallsClient {
     return controls ? { ...controls } : { volume: 100, speed: 1, loop: 'off' };
   }
 
+  // ------------------------------------------------ group participant controls
+
+  /** Fetch and return the current participant snapshot for an active group call. */
+  async getParticipants(chat: ChatRef): Promise<ParticipantInfo[]> {
+    const id = await this.resolveChatId(chat);
+    const active = this.calls.get(id);
+    if (!active) {throw new Error(`No active call in chat ${id}`);}
+    const controller = await this.ensureParticipants(id, active.call);
+    return controller.registry.snapshot();
+  }
+
+  /** Edit a participant's state in an active group call (mute, volume, raiseHand, video). */
+  async editParticipant(
+    chat: ChatRef,
+    participant: ChatRef | 'self',
+    options: EditParticipantOptions,
+  ): Promise<void> {
+    const id = await this.resolveChatId(chat);
+    const active = this.calls.get(id);
+    if (!active) {throw new Error(`No active call in chat ${id}`);}
+    if (!this.adapter.editGroupCallParticipant) {
+      throw new Error('This adapter does not support phone.editGroupCallParticipant');
+    }
+    await this.adapter.editGroupCallParticipant(active.call, participant, options);
+  }
+
+  /** Raise or lower our own hand in an active group voice chat. */
+  async setRaiseHand(chat: ChatRef, raised: boolean): Promise<void> {
+    await this.editParticipant(chat, 'self', { raiseHand: raised });
+  }
+
+  /** Mute or unmute a participant in an active group voice chat (requires admin rights). */
+  async muteParticipant(chat: ChatRef, participant: ChatRef, muted = true): Promise<void> {
+    await this.editParticipant(chat, participant, { muted });
+  }
+
+  /** Set a participant's volume in an active group voice chat (0..200%, where 100% = Telegram 10000). */
+  async setParticipantVolume(chat: ChatRef, participant: ChatRef, percent: number): Promise<void> {
+    if (!Number.isFinite(percent) || percent < 0 || percent > 200) {
+      throw new Error('Participant volume must be a finite number between 0 and 200');
+    }
+    await this.editParticipant(chat, participant, { volume: Math.round(percent * 100) });
+  }
+
   // ------------------------------------------------------------- playlist
 
   /**
@@ -1696,6 +1741,7 @@ export type {
   ActiveCall,
   AudioSource,
   ChatRef,
+  EditParticipantOptions,
   JoinOptions,
   JoinResult,
   LoopMode,
