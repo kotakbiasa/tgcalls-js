@@ -10,9 +10,8 @@ core by the pytgcalls team — prebuilt binaries, no compiling).
 [![Release](https://img.shields.io/github/v/release/kotakbiasa/tgcalls-js)](https://github.com/kotakbiasa/tgcalls-js/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-> **Last approved release: v0.8.0.** This branch adds unreleased call preflight, participant folder recording, RTMP/stream helpers, group restart recovery and an experimental conference core. See [roadmap status](docs/ROADMAP.md) and [new APIs](docs/roadmap-api.md) for verification limits.
-> Verified end-to-end against live Telegram voice chats (audio, video up to
-> 1080p60, and 40-minute idle presence) on Node 20+.
+> **Latest release: v0.9.0.** Includes call preflight (`#17`), participant folder recording (`#18`), outgoing P2P recording (`#19`), RTMP publisher & stream viewer (`#20`), experimental E2E conference core (`#21`), opt-in group state persistence (`#22`), and `confirmCall` unwrap (`#23`). See [roadmap status](docs/ROADMAP.md) and [new APIs](docs/roadmap-api.md) for verification details and native limits.
+> Verified end-to-end against live Telegram voice chats, P2P video calls, RTMP livestreams, and 2-account E2E conferences on Node 20+.
 
 ## Features
 
@@ -36,7 +35,7 @@ Sudah jalan vs belum: [`docs/ROADMAP.md`](docs/ROADMAP.md) (tracking: [#25](http
 
 ```bash
 # Pin a tag for stability. npm 12+ blocks git dependencies by default, hence --allow-git:
-npm install --allow-git=all github:kotakbiasa/tgcalls-js#v0.8.0
+npm install --allow-git=all github:kotakbiasa/tgcalls-js#v0.9.0
 ```
 
 Requirements:

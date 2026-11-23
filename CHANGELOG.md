@@ -1,14 +1,16 @@
 # Changelog
 
-## Unreleased
+## 0.9.0 (2026-11-23)
 
-- Add call preflight without ringing, explicit outgoing record options and wrapped confirm-response handling.
-- Add participant folder recording, attributed MTProto source transitions, RTMP publisher and stream viewer controllers.
-- Add opt-in atomic group state and explicit fresh restart recovery.
-- Add an experimental native conference core. Removal/rekey, encrypted application messages and crypto-health remain unavailable on ntgcalls 3.0.7.
-- Document measured native decoder limits and ffmpeg/ffprobe requirements; reject missing executables with `MediaDependencyError`.
-- Run every offline test entrypoint in an isolated process; include new public exports in dist smoke checks.
-- Live acceptance and native security blockers are tracked in `docs/ROADMAP.md`. These changes have no new version/tag/release.
+- **Call preflight without ringing (#17):** `canRequestCall()` and `getCallDenialReason()` via `users.getFullUser` and session checks on both GramJS/teleproto and mtcute adapters (verified live).
+- **Outgoing P2P recording & finalization (#19):** per-call `OutgoingCallOptions.record` override (`false` to disable, string/object to override listener default), active path collision guards, `.webm` rejection for H.264/AAC muxing, recovery file retention on failure, setup-error cleanup, and `recordingStopped` / `recordingError` events (verified live: `1280×720` H.264/AAC MP4).
+- **Outgoing `confirmCall` unwrap & RTC servers (#23):** unwraps `phone.PhoneCall { phoneCall, users }`, removes nonexistent `phone.getCall`, preserves relay endpoints, protocol versions, `customParameters`, and explicit `p2pAllowed` (verified live: `servers=2`, `CONNECTED`).
+- **RTMP publisher & broadcast stream viewer (#20):** `getStreamRtmpUrl()` (`revoke: false`), `joinRtmp()` (`RtmpPublisher`), and `joinStreamMode()` (`BroadcastController`) with explicit media-DC routing (verified live on Telegram RTMP ingest & DC 5).
+- **Per-participant folder recording (#18):** `startRecording(chat, { dir, video })`, `ParticipantRegistry`, `GroupParticipantController`, `FolderRecorder`, MTProto participant pagination/delta/min-field merge cache, attributed `remoteSourceChange` (`origin: 'mtproto'`), and `manifest.json` (verified live for single remote participant + multi-peer offline).
+- **Opt-in state persistence & fresh resume (#22):** `statePath`, `flushState()`, and `resumeFromState()` with atomic writes, fresh group rejoin/SSRC allocation, playlist restore, and fresh recording segment directories (verified live).
+- **Experimental native conference core (#21):** `createConference()`, `joinConference()`, `exportConferenceInvite()`, `inviteConferenceParticipants()`, `getEmojiFingerprint()`, and `leaveConference()` (2-account live E2E audio + matching 4-emoji fingerprint verified; removal/rekey and encrypted app messages remain blocked by `ntgcalls@3.0.7`).
+- **Media requirements (#24):** documented `ntgcalls@3.0.7` `FILE`/`FFMPEG` limits and `ffmpeg`/`ffprobe` requirements in `docs/media-support.md`; added `MediaDependencyError`.
+- **Isolated test runner:** `npm test` (`test/all.mjs`) runs every `test/*.ts` entrypoint in an isolated Node process (`18/18` passing).
 
 ## 0.8.0 (2026-11-20)
 
