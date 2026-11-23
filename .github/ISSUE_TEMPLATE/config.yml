@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation (GitBook)
+    url: https://tgcalls-js.gitbook.io/docs/
+    about: Read guides, examples, and the full API reference before opening an issue.
+  - name: Troubleshooting Guide
+    url: https://tgcalls-js.gitbook.io/docs/getting-started/troubleshooting
+    about: Common setup, ffmpeg, ntgcalls binary, and ICE/UDP issues.

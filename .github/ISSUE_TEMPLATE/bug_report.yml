@@ -1,0 +1,49 @@
+name: Bug Report
+description: Report a bug or unexpected behavior in tgcalls-js
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: Clear and concise description of what happened vs what you expected.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mtproto_client
+    attributes:
+      label: MTProto Client
+      options:
+        - teleproto
+        - telegram (GramJS)
+        - "@mtcute/node"
+        - Custom MTProtoAdapter
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Node.js version, OS/arch, tgcalls-js version, and ntgcalls version.
+      placeholder: "Node 22.x, Linux x64, tgcalls-js v0.9.0, ntgcalls 3.0.7"
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal Reproduction
+      description: Code snippet or steps to reproduce (redact any sessions, API hashes, or RTMP keys!).
+      render: ts
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / Error Output
+      description: Relevant stack trace or logs (for P2P issues, set `debug: true` in `listenCalls`).
+      render: text
