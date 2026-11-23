@@ -1,11 +1,11 @@
 # tgcalls-js
 
-> Telegram audio/video calls for Node.js with teleproto/GramJS or mtcute and ntgcalls. Latest release: v0.9.0 (plus external frame bridge, playback controls, joinAs, participant controls, and capability-aware conference E2E messages on main).
+> Telegram audio/video calls for Node.js with teleproto/GramJS or mtcute and ntgcalls. Latest release: v0.4.0 (includes Gemini Live bridge, external frame bridge, playback filters, joinAs, participant/room controls, folder recording, RTMP/stream mode, E2E conferences, and persistence).
 
 Key facts:
 - A user-account session is required; bots cannot join calls.
 - File/URL container sources, video muxing and RTMP publication need ffmpeg. Video metadata and folder validation need ffprobe. `{ kind: 'external' }` PCM sources and caller-owned shell producers need no ffmpeg.
-- Stable install: `npm install --allow-git=all github:kotakbiasa/tgcalls-js#v0.9.0`. Distribution uses git tags.
+- Stable install: `npm install --allow-git=all github:kotakbiasa/tgcalls-js#v0.4.0`. Distribution uses git tags.
 - Native dependency is pinned to ntgcalls 3.0.7; byte inputs require plain JS arrays at its NAPI boundary.
 - ConnectionState runtime values: CONNECTING=1, CONNECTED=2, FAILED=4, TIMEOUT=8, CLOSED=16.
 - Conference E2E create/invite/join/audio/emoji are live-verified; `sendConferenceMessage` / `conferenceMessage` activate automatically on `ntgcalls >= 4.0.0-alpha03` and reject with `UnsupportedNativeCapabilityError` on `3.0.7`. Removal/rekey remains upstream-blocked.
