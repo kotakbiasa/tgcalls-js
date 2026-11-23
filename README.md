@@ -38,7 +38,7 @@ Built on [`ntgcalls`](https://www.npmjs.com/package/ntgcalls) (native C++ WebRTC
 
 ```bash
 # Pin a release tag (npm 12+ requires --allow-git for GitHub dependencies)
-npm install --allow-git=all github:kotakbiasa/tgcalls-js#v0.9.0
+npm install --allow-git=all github:kotakbiasa/tgcalls-js#v0.4.0
 ```
 
 **Requirements:** Node.js ≥ 18, a Telegram **user account** session (bots cannot join voice chats), and `ffmpeg` / `ffprobe` on `PATH` (optional if you only use `{ kind: 'external' }` frames; `yt-dlp` only for `joinYouTube()`).

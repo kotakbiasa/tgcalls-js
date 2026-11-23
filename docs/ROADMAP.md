@@ -1,6 +1,6 @@
 # Call roadmap status
 
-Tracks the call stack roadmap in [#25](https://github.com/kotakbiasa/tgcalls-js/issues/25). All features below are merged on `main` and shipped in **`v0.9.0`** (with additional post-0.9.0 additions on `main`).
+Tracks the call stack roadmap in [#25](https://github.com/kotakbiasa/tgcalls-js/issues/25). All features below are merged on `main` and shipped in **`v0.4.0`**.
 
 | Issue | Status | Implemented behavior | Verification evidence |
 | --- | --- | --- | --- |

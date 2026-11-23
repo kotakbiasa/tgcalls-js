@@ -6,8 +6,8 @@ Security fixes are applied to the latest release on the `main` branch.
 
 | Version | Supported |
 |---|---|
-| `0.9.x` / `main` | ✅ |
-| `< 0.9.0` | ❌ |
+| `0.4.x` / `main` | ✅ |
+| `< 0.4.0` | ❌ |
 
 ## Security Boundaries in `tgcalls-js`
 

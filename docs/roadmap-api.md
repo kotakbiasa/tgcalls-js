@@ -1,6 +1,6 @@
-# Extended APIs (v0.9.0+)
+# Extended APIs (v0.4.0+)
 
-Quick reference summary of all APIs shipped in `v0.9.0` and on `main`. For full parameter tables, options, and end-to-end examples, see the dedicated feature guides:
+Quick reference summary of all APIs shipped in `v0.4.0` and on `main`. For full parameter tables, options, and end-to-end examples, see the dedicated feature guides:
 
 - [Group Voice & Video Calls](features/group-calls.md)
 - [Playback, Queue & Participant Controls](features/playback-and-participants.md)
