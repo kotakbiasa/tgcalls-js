@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { MediaDependencyError } from './errors.js';
 import { MediaSource } from 'ntgcalls';
-import type { AudioSource, TgCallsOptions, VideoOptions } from './types.js';
+import type { AudioSource, PlaybackFilterOptions, TgCallsOptions, VideoOptions } from './types.js';
 
 /** Check PATH without spawning after WebRTC has started native worker threads. */
 export function requireMediaExecutable(executable: string, binary: 'ffmpeg' | 'ffprobe'): string {
@@ -29,23 +29,38 @@ export function requireMediaExecutable(executable: string, binary: 'ffmpeg' | 'f
   throw new MediaDependencyError(binary, executable, binary === 'ffmpeg' ? 'ffmpegPath' : 'ffprobePath');
 }
 
+function formatTrimmed(n: number, digits: number): string {
+  return n.toFixed(digits).replace(/\.?0+$/, '');
+}
+
 /** Build the shell command that pipes decoded s16le PCM to stdout. */
-export function pcmCommand(source: AudioSource, opts: TgCallsOptions): string {
+export function pcmCommand(source: AudioSource, opts: TgCallsOptions, playback?: PlaybackFilterOptions): string {
   if (source.kind === 'shell') {return source.command;}
   if (source.kind === 'external') {
     throw new Error('External audio sources push frames via pushAudioFrame() and do not use a shell command.');
   }
   const ffmpeg = shellQuote(requireMediaExecutable(opts.ffmpegPath ?? 'ffmpeg', 'ffmpeg'));
+  const seekPrefix = playback?.startSec !== undefined && playback.startSec > 0
+    ? `-ss ${formatTrimmed(playback.startSec, 3)} `
+    : '';
+  const filters: string[] = [];
+  if (playback?.volume !== undefined && playback.volume !== 100) {
+    filters.push(`volume=${formatTrimmed(playback.volume / 100, 4)}`);
+  }
+  if (playback?.speed !== undefined && playback.speed !== 1) {
+    filters.push(`atempo=${formatTrimmed(playback.speed, 4)}`);
+  }
+  const filterFlag = filters.length > 0 ? `-af ${filters.join(',')} ` : '';
   switch (source.kind) {
     case 'file':
-      return `${ffmpeg} -vn -i ${shellQuote(source.path)} -loglevel panic -f s16le -ac 2 -ar 48000 pipe:1`;
+      return `${ffmpeg} -vn ${seekPrefix}-i ${shellQuote(source.path)} -loglevel panic ${filterFlag}-f s16le -ac 2 -ar 48000 pipe:1`;
     case 'url':
-      return `${ffmpeg} -vn -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 2 -i ${shellQuote(source.audioUrl ?? source.url)} -loglevel panic -f s16le -ac 2 -ar 48000 pipe:1`;
+      return `${ffmpeg} -vn -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 2 ${seekPrefix}-i ${shellQuote(source.audioUrl ?? source.url)} -loglevel panic ${filterFlag}-f s16le -ac 2 -ar 48000 pipe:1`;
   }
 }
 
 /** Build the ntgcalls microphone description (EXTERNAL PCM or SHELL via ffmpeg). */
-export function audioDescription(source: AudioSource, opts: TgCallsOptions) {
+export function audioDescription(source: AudioSource, opts: TgCallsOptions, playback?: PlaybackFilterOptions) {
   if (source.kind === 'external') {
     const sampleRate = source.sampleRate ?? 48000;
     const channelCount = source.channels ?? 1;
@@ -65,7 +80,7 @@ export function audioDescription(source: AudioSource, opts: TgCallsOptions) {
   }
   return {
     mediaSource: MediaSource.SHELL,
-    input: pcmCommand(source, opts),
+    input: pcmCommand(source, opts, playback),
     sampleRate: 48000,
     channelCount: 2,
     keepOpen: false,
@@ -203,17 +218,24 @@ export function videoDescription(
   source: Exclude<AudioSource, { kind: 'shell' | 'external' }>,
   video: VideoOptions,
   opts: TgCallsOptions,
+  playback?: PlaybackFilterOptions,
 ) {
   const ffmpeg = shellQuote(requireMediaExecutable(opts.ffmpegPath ?? 'ffmpeg', 'ffmpeg'));
   const width = video.width ? (video.width % 2 !== 0 ? video.width - 1 : video.width) : 1280;
   const height = video.height ? (video.height % 2 !== 0 ? video.height - 1 : video.height) : 720;
   const fps = video.fps ?? 30;
-  const scaleFilter = `scale=${width}:${height}:flags=bicubic,format=yuv420p`;
+  const seekPrefix = playback?.startSec !== undefined && playback.startSec > 0
+    ? `-ss ${formatTrimmed(playback.startSec, 3)} `
+    : '';
+  const ptsPrefix = playback?.speed !== undefined && playback.speed !== 1
+    ? `setpts=${formatTrimmed(1 / playback.speed, 6)}*PTS,`
+    : '';
+  const scaleFilter = `${ptsPrefix}scale=${width}:${height}:flags=bicubic,format=yuv420p`;
   let input: string;
   if (source.kind === 'file') {
-    input = `${ffmpeg} -an -i ${shellQuote(source.path)} -loglevel panic -f rawvideo -r ${fps} -pix_fmt yuv420p -vf ${scaleFilter} pipe:1`;
+    input = `${ffmpeg} -an ${seekPrefix}-i ${shellQuote(source.path)} -loglevel panic -f rawvideo -r ${fps} -pix_fmt yuv420p -vf ${scaleFilter} pipe:1`;
   } else {
-    input = `${ffmpeg} -an -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 2 -i ${shellQuote(source.url)} -loglevel panic -f rawvideo -r ${fps} -pix_fmt yuv420p -vf ${scaleFilter} pipe:1`;
+    input = `${ffmpeg} -an -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 2 ${seekPrefix}-i ${shellQuote(source.url)} -loglevel panic -f rawvideo -r ${fps} -pix_fmt yuv420p -vf ${scaleFilter} pipe:1`;
   }
   return {
     mediaSource: MediaSource.SHELL,

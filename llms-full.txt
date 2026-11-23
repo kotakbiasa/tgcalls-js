@@ -986,6 +986,17 @@ await tg.pushAudioFrame(group, ttsPcmBuffer, { sampleRate: 48000, channels: 1 })
 
 `{ kind: 'external' }` configures `MediaSource.EXTERNAL` with zero `ffmpeg` requirement and works in group calls, P2P calls (`listenCalls({ source: { kind: 'external' } })`), and conferences. `pushVideoFrame(chat, i420, { width, height })` pushes raw planar YUV420p frames to `camera` or `screen`. Both push helpers handle the `ntgcalls` JS-array N-API boundary automatically.
 
+## Playback controls (`seek`, `setVolume`, `setSpeed`, `setLoop`)
+
+```ts
+await tg.play(group, { kind: 'file', path: './song.mp3' });
+await tg.seek(group, 45);        // restart ffmpeg at -ss 45
+await tg.setVolume(group, 150);  // 0..200% (-af volume=1.5)
+await tg.setSpeed(group, 1.25);  // 0.5..2.0x (-af atempo=1.25, video setpts)
+await tg.setLoop(group, 'all');  // 'off' | 'one' | 'all'
+const controls = tg.getPlaybackControls(group); // { volume, speed, loop }
+```
+
 
 <!-- ===== docs/ROADMAP.md ===== -->
 

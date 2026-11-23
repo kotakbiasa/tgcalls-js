@@ -151,6 +151,26 @@ export interface StreamEndInfo {
   willAutoLeave: boolean;
 }
 
+/** Playlist repeat behavior for a chat. */
+export type LoopMode = 'off' | 'one' | 'all';
+
+/** Optional ffmpeg playback filters for file/url sources. */
+export interface PlaybackFilterOptions {
+  /** Seek start position in seconds (>= 0). */
+  startSec?: number;
+  /** Audio volume percentage (0..200, default 100). */
+  volume?: number;
+  /** Playback speed multiplier (0.5..2.0, default 1.0). */
+  speed?: number;
+}
+
+/** Current playback controls snapshot returned by getPlaybackControls(). */
+export interface PlaybackControls {
+  volume: number;
+  speed: number;
+  loop: LoopMode;
+}
+
 /** Options for startRecording(). */
 export interface RecordOptions {
   /** PCM sample rate ntgcalls resamples incoming audio to. Default 48000. */

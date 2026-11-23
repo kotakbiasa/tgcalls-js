@@ -42,6 +42,7 @@ for (const value of [RtmpPublisher, BroadcastController, ConferenceController, P
   FolderRecorder, StateStore, ResumeController, MediaDependencyError,
   pushExternalAudioFrame, pushExternalVideoFrame]) assert.equal(typeof value, 'function');
 for (const name of ['canRequestCall', 'getCallDenialReason', 'joinRtmp', 'joinStreamMode', 'createConference',
-  'joinConference', 'resumeFromState', 'flushState', 'pushAudioFrame', 'pushVideoFrame', 'onAudioFrame']) assert.equal(typeof TgCallsClient.prototype[name], 'function');
+  'joinConference', 'resumeFromState', 'flushState', 'pushAudioFrame', 'pushVideoFrame', 'onAudioFrame',
+  'seek', 'setVolume', 'setSpeed', 'setLoop', 'getLoop', 'getPlaybackControls']) assert.equal(typeof TgCallsClient.prototype[name], 'function');
 
 console.log('✅ Smoke test passed: all exports verified successfully!');

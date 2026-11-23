@@ -20,7 +20,10 @@ import type {
   ChatRef,
   JoinOptions,
   JoinResult,
+  LoopMode,
   MTProtoAdapter,
+  PlaybackControls,
+  PlaybackFilterOptions,
   RecordOptions,
   RecordingInfo,
   FolderRecordingTarget,
@@ -132,6 +135,7 @@ export class TgCallsClient {
    * track is ActiveCall.source (no separate field needed).
    */
   private readonly playlists = new Map<bigint, { queue: AudioSource[]; hold: AudioSource | null }>();
+  private readonly playbackControls = new Map<bigint, PlaybackControls>();
   /** Per-chat active recording (incoming audio mixed by ntgcalls → ffmpeg). */
   private readonly recordings = new Map<bigint, RecordingInfo>();
   private static nextFeatureId = -8_000_000_000_000_000_000n;
@@ -350,8 +354,10 @@ export class TgCallsClient {
     options: JoinOptions,
   ): Promise<JoinResult> {
     // Media sources set before the MTProto join so media flows immediately.
+    const controls = this.playbackControls.get(chatId);
+    const playback = controls ? { volume: controls.volume, speed: controls.speed } : undefined;
     const media: Record<string, unknown> = {
-      microphone: audioDescription(source, this.opts),
+      microphone: audioDescription(source, this.opts, playback),
     };
     const cameraVideo = options.presentation !== true
       && options.video !== false
@@ -366,6 +372,7 @@ export class TgCallsClient {
         source as Exclude<AudioSource, { kind: 'shell' | 'external' }>,
         { ...probed, ...targetOpts, width: probed.width, height: probed.height, fps: probed.fps },
         this.opts,
+        playback,
       );
       this.videoState.set(chatId, { device: 'camera', target: targetOpts });
     }
@@ -684,6 +691,7 @@ export class TgCallsClient {
     this.videoState.delete(id);
     this.ended.delete(id);
     this.playlists.delete(id);
+    this.playbackControls.delete(id);
 
     let finish!: () => void;
     const cleanup = new Promise<void>((resolve) => { finish = resolve; });
@@ -793,14 +801,22 @@ export class TgCallsClient {
    * Swap the audio source of an active call without leaving (queue support).
    * Use on streamEnd to start the next track in the same call.
    */
-  async setSource(chatId: ChatRef, source: AudioSource): Promise<void> {
+  async setSource(chatId: ChatRef, source: AudioSource, playback?: PlaybackFilterOptions): Promise<void> {
     const id = await this.resolveChatId(chatId);
     if (!this.calls.has(id)) {
       throw new Error(`No active call in chat ${id}`);
     }
     if (this.viewers.has(id) && this.viewers.get(id)!.mode !== 'RTC') throw new Error('Stream viewers cannot capture media; use joinRtmp for publishing');
+    const controls = this.playbackControls.get(id);
+    const effectivePlayback: PlaybackFilterOptions | undefined = playback || controls
+      ? {
+          volume: playback?.volume ?? controls?.volume ?? 100,
+          speed: playback?.speed ?? controls?.speed ?? 1,
+          ...(playback?.startSec !== undefined ? { startSec: playback.startSec } : {}),
+        }
+      : undefined;
     const media: Record<string, unknown> = {
-      microphone: audioDescription(source, this.opts),
+      microphone: audioDescription(source, this.opts, effectivePlayback),
     };
     // ntgcalls removes any device missing from the description, so rebuild the
     // video channel (camera/screen) from the new source or it would vanish.
@@ -811,7 +827,7 @@ export class TgCallsClient {
       } else {
         const srcPath = source.kind === 'file' ? source.path : source.url;
         const probed = await probeVideo(srcPath, this.opts, vs.target);
-        media[vs.device] = videoDescription(source, probed, this.opts);
+        media[vs.device] = videoDescription(source, probed, this.opts, effectivePlayback);
       }
     }
     this.ended.delete(id);
@@ -819,6 +835,88 @@ export class TgCallsClient {
     const active = this.calls.get(id);
     if (active) {active.source = source;}
     await this.persistGroup(id);
+  }
+
+  private ensurePlaybackControls(id: bigint): PlaybackControls {
+    let controls = this.playbackControls.get(id);
+    if (!controls) {
+      controls = { volume: 100, speed: 1, loop: 'off' };
+      this.playbackControls.set(id, controls);
+    }
+    return controls;
+  }
+
+  /**
+   * Seek the current file/url track to `seconds` (>= 0) by restarting the
+   * ffmpeg pipeline at `-ss <seconds>` while preserving volume, speed, and video.
+   */
+  async seek(chat: ChatRef, seconds: number): Promise<void> {
+    if (!Number.isFinite(seconds) || seconds < 0) {
+      throw new Error('Seek position must be a non-negative finite number of seconds');
+    }
+    const id = await this.resolveChatId(chat);
+    const active = this.calls.get(id);
+    if (!active) {throw new Error(`No active call in chat ${id}`);}
+    if (active.source.kind !== 'file' && active.source.kind !== 'url') {
+      throw new Error(`Cannot seek a ${active.source.kind} source — seek requires a file or url source`);
+    }
+    await this.setSource(id, active.source, { startSec: seconds });
+  }
+
+  /**
+   * Set playback volume percentage (0..200, default 100). If a file/url track is
+   * active, reapplies the ffmpeg audio filter immediately from the current position.
+   */
+  async setVolume(chat: ChatRef, percent: number): Promise<void> {
+    if (!Number.isFinite(percent) || percent < 0 || percent > 200) {
+      throw new Error('Volume must be a finite number between 0 and 200');
+    }
+    const id = await this.resolveChatId(chat);
+    this.ensurePlaybackControls(id).volume = percent;
+    const active = this.calls.get(id);
+    if (active && (active.source.kind === 'file' || active.source.kind === 'url')) {
+      const pos = await this.time(id).catch(() => 0);
+      await this.setSource(id, active.source, pos > 0 ? { startSec: pos } : undefined);
+    }
+  }
+
+  /**
+   * Set playback speed multiplier (0.5..2.0, default 1.0). If a file/url track is
+   * active, reapplies audio `atempo` (and video `setpts`) immediately.
+   */
+  async setSpeed(chat: ChatRef, rate: number): Promise<void> {
+    if (!Number.isFinite(rate) || rate < 0.5 || rate > 2.0) {
+      throw new Error('Speed must be a finite number between 0.5 and 2.0');
+    }
+    const id = await this.resolveChatId(chat);
+    this.ensurePlaybackControls(id).speed = rate;
+    const active = this.calls.get(id);
+    if (active && (active.source.kind === 'file' || active.source.kind === 'url')) {
+      const pos = await this.time(id).catch(() => 0);
+      await this.setSource(id, active.source, pos > 0 ? { startSec: pos } : undefined);
+    }
+  }
+
+  /** Set playlist loop mode: `'off'` (default), `'one'` (repeat current), or `'all'` (rotate queue). */
+  async setLoop(chat: ChatRef, mode: LoopMode): Promise<void> {
+    if (mode !== 'off' && mode !== 'one' && mode !== 'all') {
+      throw new Error(`Invalid loop mode "${String(mode)}" — expected 'off', 'one', or 'all'`);
+    }
+    const id = await this.resolveChatId(chat);
+    this.ensurePlaybackControls(id).loop = mode;
+  }
+
+  /** Current playlist loop mode for this chat (sync; resolved aliases only). */
+  getLoop(chat: ChatRef): LoopMode {
+    const id = this.cachedChatId(chat);
+    return id === undefined ? 'off' : (this.playbackControls.get(id)?.loop ?? 'off');
+  }
+
+  /** Current volume/speed/loop settings for this chat (sync; resolved aliases only). */
+  getPlaybackControls(chat: ChatRef): PlaybackControls {
+    const id = this.cachedChatId(chat);
+    const controls = id === undefined ? undefined : this.playbackControls.get(id);
+    return controls ? { ...controls } : { volume: 100, speed: 1, loop: 'off' };
   }
 
   // ------------------------------------------------------------- playlist
@@ -930,6 +1028,21 @@ export class TgCallsClient {
    * Returns true if a new source was started (so the caller must not auto-leave).
    */
   private async advancePlaylist(id: bigint): Promise<boolean> {
+    const loop = this.playbackControls.get(id)?.loop ?? 'off';
+    const active = this.calls.get(id);
+    if (loop === 'one' && active && !this.isIdleSource(active.source)) {
+      await this.setSource(id, active.source);
+      return true;
+    }
+    if (loop === 'all' && active && !this.isIdleSource(active.source)) {
+      const pl = this.ensurePlaylist(id);
+      pl.queue.push(active.source);
+      const next = pl.queue.shift();
+      if (next) {
+        await this.setSource(id, next);
+        return true;
+      }
+    }
     const pl = this.playlists.get(id);
     if (!pl) {return false;}
     const next = pl.queue.shift() ?? pl.hold;
@@ -1559,6 +1672,7 @@ export class TgCallsClient {
     this.chatAliases.clear();
     this.videoState.clear();
     this.ended.clear();
+    this.playbackControls.clear();
     if (options.preserveState) {this.persistenceSuspended--;}
   }
 }
@@ -1584,9 +1698,12 @@ export type {
   ChatRef,
   JoinOptions,
   JoinResult,
+  LoopMode,
   MTProtoLike,
   MtcuteLike,
   MTProtoAdapter,
+  PlaybackControls,
+  PlaybackFilterOptions,
   RemoteSourceInfo,
   StreamEndInfo,
   TgCallsOptions,
