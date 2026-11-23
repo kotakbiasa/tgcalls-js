@@ -520,7 +520,7 @@ export class P2PCallManager {
       this.log.error('[p2p] recording -> %s (%s)', recOpt.outPath, recOpt.video ? 'video+audio' : 'audio only');
     } else {
       await this.ntg.setStreamSources(s.peerId, StreamMode.PLAYBACK, {
-        microphone: { mediaSource: MediaSource.EXTERNAL, sampleRate: 48000, channelCount: 1, input: '', keepOpen: false },
+        microphone: { mediaSource: MediaSource.EXTERNAL, sampleRate: 48000, channelCount: 1, input: '', keepOpen: true },
       });
     }
     await this.ntg.unmute(s.peerId);

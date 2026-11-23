@@ -1550,6 +1550,7 @@ export class TgCallsClient {
    * calling again replaces it. Stop with stopListeningCalls().
    */
   async listenCalls(options: ListenCallsOptions): Promise<void> {
+    this.wireNative();
     if (this.callManager) {await this.callManager.stop();}
     const mgr = new P2PCallManager(this.ntg, this.adapter, {
       logger: this.opts.logger, ffmpegPath: this.opts.ffmpegPath, ffprobePath: this.opts.ffprobePath, ...options,
