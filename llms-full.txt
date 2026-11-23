@@ -14,6 +14,7 @@ and screen shares into Telegram voice chats using a GramJS-family client
 [`ntgcalls`](https://www.npmjs.com/package/ntgcalls) native binding (the C++ WebRTC
 core by the pytgcalls team — prebuilt binaries, no compiling).
 
+[![Docs](https://img.shields.io/badge/docs-gitbook-blue)](https://tgcalls-js.gitbook.io/docs/)
 [![Release](https://img.shields.io/github/v/release/kotakbiasa/tgcalls-js)](https://github.com/kotakbiasa/tgcalls-js/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
@@ -543,6 +544,9 @@ new TgCallsClient(options: TgCallsOptions)
 |---|---|---|---|
 | `client` | `MTProtoLike \| MtcuteLike \| MTProtoAdapter` | — | teleproto/GramJS client, mtcute client, or a custom adapter |
 | `Api` | `unknown` | auto | TL API namespace; pass per client when mixing `telegram` + `teleproto` |
+| `statePath` | `string` | — | Opt-in desired group state file path (no auto-join on construction) |
+| `persistence` | `{ allowShell?: boolean; maxBytes?: number }` | `{ allowShell: false, maxBytes: 1048576 }` | State store options when `statePath` is set |
+| `restore` | `ResumeControllerOptions` | — | Options for `resumeFromState()` (e.g. `allowShell`, `resolveSource`) |
 | `ffmpegPath` | `string` | `"ffmpeg"` | ffmpeg binary |
 | `ffprobePath` | `string` | `"ffprobe"` | ffprobe binary |
 | `ytDlpPath` | `string` | `"yt-dlp"` | yt-dlp binary |
@@ -587,13 +591,39 @@ the call stays.
 #### Playback control
 
 ```ts
-setSource(chat: ChatRef, source: AudioSource): Promise<void>  // swap audio, keep video (queue)
+setSource(chat: ChatRef, source: AudioSource, playback?: PlaybackFilterOptions): Promise<void>
+seek(chat: ChatRef, seconds: number): Promise<void>
+setVolume(chat: ChatRef, percent: number): Promise<void>          // 0..200% (default 100)
+setSpeed(chat: ChatRef, rate: number): Promise<void>              // 0.5..2.0x (default 1.0)
+setLoop(chat: ChatRef, mode: LoopMode): Promise<void>             // 'off' | 'one' | 'all'
+getLoop(chat: ChatRef): LoopMode                                  // sync
+getPlaybackControls(chat: ChatRef): PlaybackControls              // sync: { volume, speed, loop }
 pause(chat: ChatRef): Promise<boolean>
 resume(chat: ChatRef): Promise<boolean>
 mute(chat: ChatRef): Promise<boolean>
 unmute(chat: ChatRef): Promise<boolean>
-time(chat: ChatRef): Promise<number>                          // seconds streamed
+time(chat: ChatRef): Promise<number>                              // seconds streamed
 ```
+
+#### Group participant controls
+
+```ts
+getParticipants(chat: ChatRef): Promise<ParticipantInfo[]>
+editParticipant(chat: ChatRef, participant: ChatRef | 'self', options: EditParticipantOptions): Promise<void>
+setRaiseHand(chat: ChatRef, raised: boolean): Promise<void>
+muteParticipant(chat: ChatRef, participant: ChatRef, muted?: boolean): Promise<void>
+setParticipantVolume(chat: ChatRef, participant: ChatRef, percent: number): Promise<void> // 0..200%
+```
+
+#### Real-time external frame bridge (Voice AI)
+
+```ts
+onAudioFrame(chat: ChatRef | ConferenceHandle, handler: (frame: ExternalAudioFrame) => void | Promise<void>, options?: ExternalAudioSinkOptions): Promise<() => void>
+pushAudioFrame(chat: ChatRef | ConferenceHandle, pcm: Uint8Array, options?: PushAudioOptions): Promise<void>
+pushVideoFrame(chat: ChatRef | ConferenceHandle, i420: Uint8Array, options: PushVideoOptions): Promise<void>
+```
+
+See [Voice AI & External Frame Bridge](features/external-frames.md) for full details and options.
 
 #### Playlist / queue
 
@@ -752,7 +782,8 @@ client. `activeCalls()` always returns marked ids.
 type AudioSource =
   | { kind: 'file'; path: string }
   | { kind: 'url'; url: string; audioUrl?: string }
-  | { kind: 'shell'; command: string };
+  | { kind: 'shell'; command: string }
+  | { kind: 'external'; sampleRate?: number; channels?: 1 | 2; keepOpen?: boolean };
 ```
 
 ### `JoinOptions`
@@ -760,9 +791,11 @@ type AudioSource =
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `muted` | `boolean` | `false` | join with microphone muted |
+| `paused` | `boolean` | `false` | join with capture paused before connecting |
 | `autoLeave` | `boolean` | `true` | leave when the audio stream ends (suppressed by a `streamEnd` handler) |
 | `allowCreate` | `boolean` | `false` | create a missing voice chat (requires admin rights) |
 | `inviteHash` | `string` | — | invite hash when joining via a call invite link |
+| `joinAs` | `ChatRef` | self | join the voice chat as another peer (e.g. `@mychannel`) |
 | `video` | `VideoOptions \| false` | — | share video from the same source |
 | `presentation` | `boolean` | `false` | use the presentation channel for this call |
 
@@ -819,6 +852,13 @@ interface TgCallsEvents {
   streamEnd: (info: StreamEndInfo) => void | Promise<void>;
   connectionChange: (chatId: bigint, state: ConnectionState) => void | Promise<void>;
   update: (update: unknown) => void | Promise<void>;
+  recordingStopped: (chatId: bigint, info: RecordingStoppedInfo) => void | Promise<void>;
+  recordingError: (chatId: bigint, error: Error) => void | Promise<void>;
+  broadcastError: (chatId: bigint, error: Error) => void | Promise<void>;
+  conferenceMessage: (event: ConferenceMessageEvent) => void | Promise<void>;
+  conferenceError: (error: unknown) => void | Promise<void>;
+  persistenceError: (error: PersistenceError) => void | Promise<void>;
+  remoteSourceChange: (chatId: bigint, source: RemoteSourceInfo) => void | Promise<void>;
 }
 ```
 
@@ -832,9 +872,13 @@ All extend `TgCallsError` (which extends `Error`); `error.name` is the class nam
 | Class | Extra | Thrown when |
 |---|---|---|
 | `TgCallsError` | — | base class for all library errors |
-| `AlreadyInCallError` | `chatId: bigint` | `join`/`joinIdle` while already in a call (or mid-join) in that chat |
+| `AlreadyInCallError` | `chatId: bigint` | `join`/`joinIdle`/`joinStreamMode` while already in a call (or mid-join) in that chat |
 | `NoVoiceChatError` | — | no active voice chat and `allowCreate` not set |
 | `UnrecognizedClientError` | — | the `client` is neither GramJS-family, mtcute, nor an adapter |
+| `RtmpPublisherError` | — | invalid RTMP URL/key, unsupported source, or ffmpeg publisher error |
+| `ConferenceProtocolError` | — | invalid conference subchain block, offset, or missing adapter capability |
+| `UnsupportedNativeCapabilityError` | `capability: string` | native `ntgcalls` binary lacks the requested conference capability (e.g. `encryptMessage` on `3.0.7`) |
+| `PersistenceError` | `code: PersistenceErrorCode` | state file validation, version mismatch, size limit, lock, or I/O failure |
 
 ## Adapters
 
@@ -875,7 +919,18 @@ loadEvents(...): unknown
 
 # Extended APIs (v0.9.0+)
 
-These APIs are shipped in `v0.9.0` and on `main`. See [the roadmap](ROADMAP.md) for live verification results and `ntgcalls` native capability boundaries.
+Quick reference summary of all APIs shipped in `v0.9.0` and on `main`. For full parameter tables, options, and end-to-end examples, see the dedicated feature guides:
+
+- [Group Voice & Video Calls](features/group-calls.md)
+- [Playback, Queue & Participant Controls](features/playback-and-participants.md)
+- [1-on-1 P2P Calls & Preflight](features/p2p-calls.md)
+- [Recording (Mixed & Per-Participant)](features/recording.md)
+- [RTMP Streaming & Broadcast Viewer](features/rtmp-and-streams.md)
+- [E2E Group Conferences](features/conferences.md)
+- [Voice AI & External Frame Bridge](features/external-frames.md)
+- [Persistence & Restart Recovery](features/persistence.md)
+
+See [the roadmap](ROADMAP.md) for live verification results and `ntgcalls` native capability boundaries.
 
 ## P2P preflight and recording
 

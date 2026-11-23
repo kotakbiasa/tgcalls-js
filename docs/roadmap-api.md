@@ -1,6 +1,17 @@
 # Extended APIs (v0.9.0+)
 
-These APIs are shipped in `v0.9.0` and on `main`. See [the roadmap](ROADMAP.md) for live verification results and `ntgcalls` native capability boundaries.
+Quick reference summary of all APIs shipped in `v0.9.0` and on `main`. For full parameter tables, options, and end-to-end examples, see the dedicated feature guides:
+
+- [Group Voice & Video Calls](features/group-calls.md)
+- [Playback, Queue & Participant Controls](features/playback-and-participants.md)
+- [1-on-1 P2P Calls & Preflight](features/p2p-calls.md)
+- [Recording (Mixed & Per-Participant)](features/recording.md)
+- [RTMP Streaming & Broadcast Viewer](features/rtmp-and-streams.md)
+- [E2E Group Conferences](features/conferences.md)
+- [Voice AI & External Frame Bridge](features/external-frames.md)
+- [Persistence & Restart Recovery](features/persistence.md)
+
+See [the roadmap](ROADMAP.md) for live verification results and `ntgcalls` native capability boundaries.
 
 ## P2P preflight and recording
 
