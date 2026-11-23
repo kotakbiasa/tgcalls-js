@@ -27,7 +27,7 @@ const { Api } = require('teleproto');
   await adapter.joinGroupCall(inputCall, '{"ssrc":1}', { joinAs: '@mychannel', muted: true });
   assert.equal(sent.at(-1).className, 'phone.JoinGroupCall');
   assert.equal(sent.at(-1).joinAs.className, 'InputPeerChannel');
-  assert.equal(sent.at(-1).joinAs.channelId, 999n);
+  assert.equal(String(sent.at(-1).joinAs.channelId), '999');
 
   await adapter.editGroupCallParticipant(inputCall, 'self', { raiseHand: true });
   assert.equal(sent.at(-1).className, 'phone.EditGroupCallParticipant');
@@ -96,7 +96,7 @@ const { Api } = require('teleproto');
     },
   };
   const tg = new TgCallsClient({ client: adapter });
-  for (const [name, fn] of Object.entries({
+  const mocks: Record<string, (...args: any[]) => unknown> = {
     createCall: async () => '{"ssrc":55}',
     connect: async () => {},
     stop: async () => {},
@@ -104,7 +104,8 @@ const { Api } = require('teleproto');
     onStreamEnd: () => {},
     onConnectionChange: () => {},
     onRemoteSourceChange: () => {},
-  })) {
+  };
+  for (const [name, fn] of Object.entries(mocks)) {
     Object.defineProperty(tg.ntg, name, { configurable: true, value: fn });
   }
 
