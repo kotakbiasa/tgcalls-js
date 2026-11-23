@@ -1,107 +1,138 @@
 # Recording (Mixed & Per-Participant)
 
-`tgcalls-js` supports three recording modes:
+`tgcalls-js` provides three recording pipelines depending on your use case:
 
-1. **Group mixed audio** — single audio file containing all remote speakers mixed together by `ntgcalls`.
-2. **Group per-participant folder recording** — separate audio (`.wav`) and video (`.mp4`) files per participant, per device, and per resolution segment, plus a JSON manifest.
-3. **1-on-1 P2P recording** — remote audio or muxed H.264/AAC video+audio `.mp4`/`.mkv`.
+| Mode | Call Type | Output | Attribution | Validation |
+|---|---|---|---|---|
+| **Mixed audio** (`startRecording(chat, path)`) | Group call | Single `.wav`/`.mp3`/`.opus` file | All speakers mixed together | Best-effort `ffmpeg` pipe |
+| **Per-participant folder** (`startRecording(chat, { dir, video })`) | Group call (RTC / STREAM) | Separate `.wav` (mic) + `.mp4` (camera/screen) per speaker + `manifest.json` | Full peer ID + SSRC + device | Drained + `ffprobe`-validated (`status: 'saved'`) |
+| **P2P remote recording** (`listenCalls` / `callUser` `record`) | 1-on-1 P2P call | Remote audio or muxed H.264/AAC `.mp4`/`.mkv` | Remote peer user ID | `recordingStopped` status |
+
+---
 
 ## 1. Mixed Group Audio Recording
 
-Pass a file path string to `startRecording()`. The output format is inferred from the extension (`.wav`, `.mp3`, `.opus`, `.m4a`, etc.):
+Pass a file path string to `startRecording()`. `ntgcalls` mixes all remote speakers natively into a single `s16le` PCM stream and pipes it to `ffmpeg`, which chooses the container/codec from the file extension (`.wav`, `.mp3`, `.opus`, `.m4a`, etc.).
 
 ```ts
 await tg.joinIdle('@mygroup');
+
 const info = await tg.startRecording('@mygroup', './recordings/meeting.mp3', {
-  sampleRate: 48000,
-  channels: 1,
+  sampleRate: 48000, // default: 48000
+  channels: 1,       // default: 1 (mono); pass 2 for stereo
 });
 
-// Check status synchronously
-console.log(tg.isRecording('@mygroup'), tg.getRecording('@mygroup'));
+console.log('Recording started at:', new Date(info.startedAt));
+console.log('Active?', tg.isRecording('@mygroup')); // true (sync)
 
-// Stop and finalize
-const savedPath = await tg.stopRecording('@mygroup');
+// Later: stop recording (leaving the call also stops it automatically)
+const filePath = await tg.stopRecording('@mygroup');
+console.log('Saved to:', filePath);
 ```
+
+> **Note:** Mixed recording requires an active call (`join` or `joinIdle`). Only one recording can be active per chat — calling `startRecording()` again stops the previous recording first.
+
+---
 
 ## 2. Per-Participant Folder Recording
 
-Pass a `FolderRecordingTarget` object (`{ dir, video?, sampleRate?, channels? }`) to record each speaker and camera/screen stream into separate files:
+Pass a `FolderRecordingTarget` object to record every participant's microphone, camera, and screen share into **separate files** with automatic segment rotation and a JSON manifest.
+
+### How It Works Under the Hood
+
+1. `tgcalls-js` fetches all pages of `phone.getGroupParticipants` and subscribes to `UpdateGroupCallParticipants` deltas to map every audio/video SSRC to a Telegram peer (`user`, `channel`, or `chat`).
+2. It configures `StreamMode.PLAYBACK` with `MediaSource.EXTERNAL` and receives raw decoded audio/video frames tagged by SSRC.
+3. Each unique `(peer, device, endpoint, resolution)` opens its own dedicated writer:
+   - **Microphone** → uncompressed `.wav`
+   - **Camera / Screen** → H.264/AAC `.mp4` (constant frame rate using local monotonic arrival timestamps)
+4. Whenever a participant switches devices, reconnects with a new endpoint, or changes video resolution, the current segment is closed, validated with `ffprobe`, and a new segment begins automatically.
+5. On `stopRecording()` or `leave()`, all buffered frames are drained, all writers are closed, outputs are probed with `ffprobe`, `manifest.json` is written, and `recordingStopped` is emitted for each segment.
+
+### Complete Example
 
 ```ts
 await tg.joinIdle('@mygroup');
 
+// Observe every finalized segment
 tg.on('recordingStopped', (chatId, info) => {
-  // info: { path, peer?, device, segment, reason, status, error? }
-  // Only status === 'saved' guarantees a closed, ffprobe-validated file.
-  console.log('Segment finalized:', info.status, info.path, info.peer);
+  if (info.status === 'saved') {
+    console.log(`Saved [${info.device} seg #${info.segment}]`, info.peer, '→', info.path);
+  } else if (info.status === 'failed') {
+    console.error(`Failed [${info.device}]`, info.error);
+  }
 });
 
+// Observe disk / encoder / ffprobe errors
 tg.on('recordingError', (chatId, err) => {
-  console.error('Recording error:', err);
+  console.error(`[${chatId}] recording error:`, err);
+});
+
+// Observe participant media transitions (camera/mic/screen active/paused/idling)
+tg.on('remoteSourceChange', (chatId, src) => {
+  console.log(`[${chatId}] source update:`, src.peer, src.device, src.state);
 });
 
 await tg.startRecording('@mygroup', {
-  dir: './recordings/session-1',
+  dir: './recordings/meeting-2026',
   video: true,
   sampleRate: 48000,
   channels: 1,
 });
 
-// ... later: drains buffered frames, closes writers, probes outputs, writes manifest
-const dir = await tg.stopRecording('@mygroup');
+// ... wait for meeting to finish ...
+const folderPath = await tg.stopRecording('@mygroup');
+console.log('All artifacts finalized in:', folderPath);
 ```
 
 ### `FolderRecordingTarget` Options
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `dir` | `string` | required | Output directory for per-participant media files and manifest |
-| `video` | `boolean` | `false` | Capture remote `camera` and `screen` video streams as H.264/AAC MP4 |
-| `sampleRate` | `number` | `48000` | Audio PCM sample rate |
-| `channels` | `1 \| 2` | `1` | Audio channel count (mono or stereo) |
-
-### Output & Segment Rotation
-
-- **Microphone** tracks are saved as `.wav`.
-- **Camera** and **Screen** tracks are encoded as H.264/AAC `.mp4` (CFR monotonic arrival timeline).
-- A **new segment** is created automatically whenever a participant's peer ID, device, endpoint, or video resolution changes.
-- A **manifest file** records participant identities, SSRCs, segment timing, dropped frames, and finalization status.
-- Leaving the call (`leave()` / `dispose()`) automatically drains and finalizes open recordings before returning.
+| `dir` | `string` | required | Output directory for per-participant media files and `manifest.json` |
+| `video` | `boolean` | `false` | Capture remote `camera` and `screen` video streams as H.264/AAC `.mp4` (requires `ffmpeg` + `ffprobe`) |
+| `sampleRate` | `number` | `48000` | PCM sample rate for `.wav` microphone tracks |
+| `channels` | `1 \| 2` | `1` | Channel count for `.wav` microphone tracks |
 
 ### `recordingStopped` Event Payload (`RecordingStoppedInfo`)
 
 | Field | Type | Description |
 |---|---|---|
-| `path` | `string` | Path to the recorded segment file |
-| `peer` | `PeerIdentity \| undefined` | Attributed participant (`{ kind, id }`) when known |
-| `device` | `'microphone' \| 'camera' \| 'screen'` | Source device |
-| `segment` | `number` | Segment index |
-| `reason` | `string` | Why the segment closed (`'stop'`, `'leave'`, `'rotation'`, `'rejoin'`, etc.) |
-| `status` | `'saved' \| 'empty' \| 'failed'` | Only `'saved'` means the file was closed and validated with `ffprobe` |
-| `error` | `Error \| undefined` | Present when `status === 'failed'` |
+| `path` | `string` | Path to the closed segment file |
+| `peer` | `{ kind: 'user' \| 'channel' \| 'chat', id: bigint } \| undefined` | Attributed participant identity when resolved |
+| `device` | `'microphone' \| 'camera' \| 'screen'` | Which stream device produced this segment |
+| `segment` | `number` | Zero-based segment counter |
+| `reason` | `string` | Reason the segment closed (`'stop'`, `'leave'`, `'rotation'`, `'rejoin'`, etc.) |
+| `status` | `'saved' \| 'empty' \| 'failed'` | **Only `'saved'`** guarantees a non-empty, `ffprobe`-validated file |
+| `error` | `Error \| undefined` | Error details when `status === 'failed'` |
 
-### Limitations & Rules
+### Constraints & Edge Cases
 
-- Only **one** `PLAYBACK` recording sink owns a group at a time — calling `startRecording()` again stops the previous recording first.
-- Unified **RTMP viewer** streams cannot be attributed per participant and are rejected for folder recording.
-- `remoteSourceChange` emits `{ ssrc, device, state, peer?, endpoint?, origin? }` using MTProto participant deltas (`origin: 'mtproto'`), mapping removed sources to `StreamStatus.IDLING`.
+- **Single `PLAYBACK` owner:** Only one recording sink (mixed or folder) can own a group at a time. Starting a new recording stops the previous one cleanly first.
+- **RTMP viewers excluded:** Unified RTMP broadcast streams do not carry per-speaker SSRCs, so folder recording is rejected on RTMP viewer sessions.
+- **Audio/video clock note:** Native audio and video timestamps are not assumed to share a hardware clock; camera/screen segments use a monotonic arrival timeline with CFR output.
 
-## 3. P2P Call Recording
+---
 
-Configure `record` on `listenCalls()` or override per call in `callUser()`:
+## 3. 1-on-1 P2P Call Recording
+
+Configure `record` on `listenCalls()` as a default, and optionally override or disable it per call in `callUser()`:
 
 ```ts
 await tg.listenCalls({
   source: { kind: 'file', path: './tone.mp3' },
-  record: { path: './p2p/remote.mp4', video: true },
+  record: { path: './p2p/default-remote.mp4', video: true },
 });
 
-// Override or disable on a specific outgoing call
-await tg.callUser('@alice', { record: false });
-await tg.callUser('@bob', { record: './p2p/bob-audio.wav' });
+// Override output path for a specific outgoing call
+await tg.callUser('@alice', {
+  video: true,
+  record: { path: './p2p/alice.mp4', video: true },
+});
+
+// Disable recording for another call
+await tg.callUser('@bob', { record: false });
 ```
 
-- Extensions `.mp4` and `.mkv` mux remote video (I420 → H.264) + audio by default (`video: true`).
-- Any other extension (`.wav`, `.mp3`, `.opus`) records remote audio only.
-- Finalization emits `recordingStopped` (and `recordingError` on failure).
+- **`.mp4` / `.mkv`:** Muxes remote camera (raw I420 → H.264) + remote audio (AAC) by default (`video: true`).
+- **Any other extension** (`.wav`, `.mp3`, `.opus`): Records remote audio only.
+- Emits `recordingStopped` (with `peer: { kind: 'user', id: peerId }`) and `recordingError` on failure.

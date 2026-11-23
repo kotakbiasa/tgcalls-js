@@ -1,90 +1,122 @@
 # E2E Group Conferences
 
-`tgcalls-js` exposes Telegram's end-to-end encrypted **Group Conference** protocol (blockchain-style subchain blocks + native E2E key derivation via `ntgcalls`).
+Telegram **Group Conferences** are end-to-end encrypted multi-party calls where participants maintain a cryptographically signed subchain of membership blocks and derive a shared 4-emoji verification fingerprint. `tgcalls-js` implements the full conference signaling, subchain block synchronization, participant SSRC/video mapping, and capability-aware E2E message encryption on top of `ntgcalls`.
 
-> **Note:** Conference support is marked **experimental** because `ntgcalls@3.0.7` does not expose `removeConferenceParticipants`, `rekeyConference`, or `encryptMessage`/`decryptMessage`. See the capability matrix below.
+---
 
-## Quick Example
+## Native Capability Matrix (`ntgcalls` 3.0.7 vs 4.0.0+)
+
+Because `ntgcalls` evolves independently, `tgcalls-js` inspects the loaded native binary at runtime via `tg.getConferenceCapabilities()`:
+
+| Capability | `ntgcalls@3.0.7` | `ntgcalls >= 4.0.0-alpha03` | Notes |
+|---|---|---|---|
+| `coreLifecycle` (create, join, invite, subchains, audio/video, emoji fingerprint) | ✅ Supported | ✅ Supported | Verified live with 2 accounts |
+| `applicationEncryption` (`sendConferenceMessage` / `conferenceMessage`) | ❌ Throws `UnsupportedNativeCapabilityError` | ✅ Auto-enabled | Uses native `encryptMessage` / `decryptMessage` |
+| `removeParticipants` (`removeConferenceParticipants`) | ❌ Throws `UnsupportedNativeCapabilityError` | ❌ Upstream pending | Never falls back to insecure ops |
+| `rekey` (`rekeyConference`) | ❌ Throws `UnsupportedNativeCapabilityError` | ❌ Upstream pending | Never synthesizes JS keys |
+
+> **Security guarantee:** `tgcalls-js` **never** falls back to plaintext, never implements custom JavaScript cryptography, and never synthesizes private keys or signed chain blocks. All cryptographic primitives stay inside `ntgcalls`.
+
+---
+
+## How Conference Lifecycle Works
+
+1. **Create or Join:** `createConference()` / `joinConference()` allocates a dedicated native handle (`ConferenceHandle = { nativeId, callId }`), initializes the native conference (`createP2pCall` → `initConference`), installs your capture media (`prepareCapture`), and sends the MTProto create/join RPC.
+2. **Subchain Sync:** `tgcalls-js` validates incoming `UpdateGroupCallChainBlocks` server block constructors, applies them to `ntgcalls.applyBlocks()`, and responds to native `outboundBlock` / `subchainRequest` / `requestParticipants` events automatically.
+3. **Emoji Fingerprint:** As participants join and subchains converge, `ntgcalls` emits `updateEmojis`. Read the current 4-emoji string anytime via `getEmojiFingerprint(handle)`.
+4. **Separate from `ChatRef`:** Conferences are identified by an opaque `ConferenceHandle` (not a group `ChatRef`). Always pass the handle returned by `createConference` or `joinConference` to conference methods.
+
+---
+
+## Complete Two-Client Conference Example
 
 ```ts
-// Host creates a conference and exports an invite link
-const handle = await host.createConference({
-  source: { kind: 'file', path: './tone.mp3' },
+// --- Host creates the conference ---
+host.on('conferenceError', (err) => console.error('[host] conference error:', err));
+
+const hostHandle = await host.createConference({
+  source: { kind: 'file', path: './host-audio.mp3' },
 });
-const inviteUrl = await host.exportConferenceInvite(handle);
-console.log('Share invite:', inviteUrl);
 
-// Invite a specific user (rings them)
-await host.inviteConferenceParticipants(handle, ['@alice'], { video: false });
+// Export shareable invite link (https://t.me/call/<slug>)
+const inviteLink = await host.exportConferenceInvite(hostHandle);
+console.log('Invite link:', inviteLink);
 
-// Second client joins via slug, inviteMessageId, or { id, accessHash }
-const slug = inviteUrl.split('/').pop()!;
+// Optionally ring a specific Telegram user directly
+await host.inviteConferenceParticipants(hostHandle, ['@alice'], { video: false });
+
+// --- Guest joins via slug ---
+guest.on('conferenceError', (err) => console.error('[guest] conference error:', err));
+
+const slug = inviteLink.split('/').pop()!;
 const guestHandle = await guest.joinConference({ slug }, {
-  source: { kind: 'file', path: './hello.mp3' },
+  source: { kind: 'file', path: './guest-audio.mp3' },
 });
 
-// Verify 4-emoji E2E fingerprint matches on both sides
-const hostEmojis = await host.getEmojiFingerprint(handle);
+// Compare 4-emoji E2E fingerprint out-of-band
+const hostEmojis = await host.getEmojiFingerprint(hostHandle);
 const guestEmojis = await guest.getEmojiFingerprint(guestHandle);
-console.log({ hostEmojis, guestEmojis }); // e.g. "🔶🐚🚶🔋"
+console.log('Fingerprints match:', hostEmojis === guestEmojis, hostEmojis);
 
-// Leave
+// Leave cleanly
 await guest.leaveConference(guestHandle);
-await host.leaveConference(handle);
+await host.leaveConference(hostHandle);
 ```
 
-## Conference Methods
+### Supported `ConferenceRef` Formats for `joinConference()`
 
-| Method | Signature | Description |
-|---|---|---|
-| `createConference` | `(options?) => Promise<ConferenceHandle>` | Create a new E2E conference and initialize native subchain |
-| `joinConference` | `(ref: ConferenceRef, options?) => Promise<ConferenceHandle>` | Join via `{ slug }`, `{ inviteMessageId }`, or `{ id, accessHash }` |
-| `exportConferenceInvite` | `(handle) => Promise<string>` | Returns the conference invite URL |
-| `inviteConferenceParticipants` | `(handle, users: ChatRef[], { video? }) => Promise<void>` | Rings users to join the conference |
-| `getEmojiFingerprint` | `(handle) => Promise<string \| null>` | Returns 4-emoji verification string (`null` while pending) |
-| `activeConferences` | `() => ConferenceHandle[]` | Lists all active conference handles |
-| `getConferenceCapabilities` | `() => ConferenceCapabilities` | Inspects native `ntgcalls` capabilities at runtime |
-| `sendConferenceMessage` | `(handle, input) => Promise<ConferenceMessageReceipt>` | Send an E2E-encrypted conference message (requires `ntgcalls >= 4.0.0-alpha03`) |
-| `leaveConference` | `(handle) => Promise<void>` | Leave the conference and stop native resources |
+```ts
+type ConferenceRef =
+  | { slug: string }                       // from https://t.me/call/<slug>
+  | { inviteMessageId: number }            // from an invite message ID
+  | { id: bigint; accessHash: bigint };    // raw call ID + access hash
+```
 
 ### `ConferenceOptions`
 
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `source` | `AudioSource` | — | Optional audio source (`'file'`, `'url'`, `'shell'`, or `'external'`) |
-| `video` | `VideoOptions` | — | Optional camera video (for `file`/`url` sources) |
-| `muted` | `boolean` | `!source` | Join muted |
-| `videoStopped` | `boolean` | `!video` | Join with video disabled |
-| `signal` | `AbortSignal` | — | Optional cancellation signal |
+| `video` | `VideoOptions` | — | Optional camera video (for `'file'` / `'url'` sources) |
+| `muted` | `boolean` | `!source` | Join with microphone muted |
+| `videoStopped` | `boolean` | `!video` | Join with camera disabled |
+| `signal` | `AbortSignal` | — | Cancel in-flight create/join/subchain RPCs |
 
-## Capability-Aware E2E Encrypted Messages (`ntgcalls >= 4.0.0-alpha03`)
+---
 
-`tgcalls-js` inspects `ntgcalls` at runtime via `getConferenceCapabilities()`:
+## E2E Encrypted Conference Messages (`ntgcalls >= 4.0.0-alpha03`)
+
+Check `getConferenceCapabilities().applicationEncryption` before sending or receiving encrypted conference messages:
 
 ```ts
 const caps = tg.getConferenceCapabilities();
-console.log(caps);
-// On ntgcalls 3.0.7:
-//   { nativeVersion: '3.0.7', coreLifecycle: true, applicationEncryption: false, removeParticipants: false, rekey: false, ... }
-// On ntgcalls >= 4.0.0-alpha03:
-//   { nativeVersion: '4.0.0+', coreLifecycle: true, applicationEncryption: true, ... }
+
+if (caps.applicationEncryption) {
+  // Listen for incoming decrypted messages
+  tg.on('conferenceMessage', (event) => {
+    console.log(`[call ${event.callId}] from ${event.fromUserId}:`, {
+      text: event.text,         // decoded UTF-8 text (when JSON text payload)
+      randomId: event.randomId, // message random ID
+      raw: event.raw,           // raw decrypted Buffer
+      parsed: event.parsed,     // parsed JSON object (if valid JSON)
+    });
+  });
+
+  // Send a plain text message
+  const receipt = await tg.sendConferenceMessage(handle, 'Hello E2E conference!');
+  console.log('Sent:', receipt.randomId, receipt.bytes, 'bytes');
+
+  // Send formatted message object or raw Uint8Array bytes
+  await tg.sendConferenceMessage(handle, { text: 'Bold alert', entities: [] });
+  await tg.sendConferenceMessage(handle, new Uint8Array([1, 2, 3, 4]));
+}
 ```
 
-When `caps.applicationEncryption === true`:
+## Introspection & Cleanup
 
 ```ts
-// Listen for decrypted incoming conference messages
-tg.on('conferenceMessage', (event) => {
-  // event: { handle, callId, fromUserId, raw: Buffer, text?, randomId?, parsed? }
-  console.log(`Message from ${event.fromUserId}:`, event.text ?? event.raw);
-});
-
-// Send text, formatted object, or raw encrypted bytes
-const receipt = await tg.sendConferenceMessage(handle, 'Hello E2E conference!');
-// Or structured: { text: 'Hi', entities: [], randomId: 123n }
-// Or raw bytes: new Uint8Array([...])
+tg.activeConferences();                // ConferenceHandle[] of active conferences
+tg.getConferenceCapabilities();        // frozen capability snapshot
+await tg.leaveConference(handle);      // leave one conference
+await tg.dispose();                    // automatically leaves all active conferences
 ```
-
-- On `ntgcalls@3.0.7`, calling `sendConferenceMessage`, `removeConferenceParticipants`, or `rekeyConference` rejects with `UnsupportedNativeCapabilityError`.
-- `tgcalls-js` **never** falls back to plaintext or custom JavaScript cryptography, and never synthesizes private keys or signed chain blocks.
-- Asynchronous chain/poll failures are emitted on `tg.on('conferenceError', (err) => ...)`.
