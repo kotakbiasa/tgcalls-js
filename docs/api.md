@@ -2,7 +2,7 @@
 
 All exports come from the package root (`import … from 'tgcalls-js'`).
 
-New APIs on the unreleased roadmap branch are documented in [Roadmap APIs](roadmap-api.md). They are not included in the `v0.8.0` tag.
+Extended APIs (call preflight, folder recording, RTMP/stream mode, E2E conferences, persistence, external frame bridge, playback & participant controls) are documented in [Extended APIs](roadmap-api.md).
 
 ## `TgCallsClient`
 

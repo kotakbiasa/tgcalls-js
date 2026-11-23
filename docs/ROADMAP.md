@@ -1,17 +1,17 @@
-# Call roadmap implementation
+# Call roadmap status
 
-This working branch contains implementations for the roadmap in [#25](https://github.com/kotakbiasa/tgcalls-js/issues/25). New APIs below are **unreleased**. The last approved release remains `v0.8.0`; its tag does not contain these additions. No full parity claim is made for MadelineProto.
+Tracks the call stack roadmap in [#25](https://github.com/kotakbiasa/tgcalls-js/issues/25). All features below are merged on `main` and shipped in **`v0.9.0`** (with additional post-0.9.0 additions on `main`).
 
-| Issue | Implemented behavior | Evidence and remaining acceptance |
-| --- | --- | --- |
-| [#17](https://github.com/kotakbiasa/tgcalls-js/issues/17) | `canRequestCall` / `getCallDenialReason`, profile flags and session checks without ringing | Concrete adapter fixtures and no-ringing regression pass; live read-only profile comparison remains open |
-| [#19](https://github.com/kotakbiasa/tgcalls-js/issues/19) | Per-call outgoing recording override, inherited listener default, `false` to disable, active path collision checks | Outgoing fixture media, lifecycle and RPC-shape tests; finalization integration and candidate live recording still require final verification |
-| [#18](https://github.com/kotakbiasa/tgcalls-js/issues/18) | Folder output by peer/device, MTProto participant registry, camera/screen subscriptions, segmented WAV/MP4 and manifest | Real PCM/I420 fixture output and public facade tests pass; two live publishers and real AV sync remain open |
-| [#23](https://github.com/kotakbiasa/tgcalls-js/issues/23) | Unwrap `confirmCall`, preserve endpoints/protocol/custom JSON, direct P2P only with explicit permission | Red/green teleproto/mtcute-shaped regressions pass; candidate live adapter check remains open |
-| [#20](https://github.com/kotakbiasa/tgcalls-js/issues/20) | RTMP H.264/AAC publisher plus separate server-selected stream viewer | Real RTMP loopback and controller/facade fixtures pass; actual Telegram key, viewer download/decode and reconnect remain open |
-| [#21](https://github.com/kotakbiasa/tgcalls-js/issues/21) | Experimental native conference core, chain relay, invite, participant mappings, capability refusals | Offline port and labelled native simulator tests; full E2E/security acceptance blocked by native 3.0.7, live two-account test not run |
-| [#22](https://github.com/kotakbiasa/tgcalls-js/issues/22) | Opt-in private atomic state file, explicit fresh group rejoin, queue/hold and new recording segments | Two-process persistence fixtures and facade restore pass; live restart acceptance remains open |
-| [#24](https://github.com/kotakbiasa/tgcalls-js/issues/24) | Documented ffmpeg requirement and typed executable errors | MP4/WebM/MKV decode probes plus native FILE/FFMPEG investigation; combined candidate suite is the final gate |
+| Issue | Status | Implemented behavior | Verification evidence |
+| --- | --- | --- | --- |
+| [#17](https://github.com/kotakbiasa/tgcalls-js/issues/17) | **Closed** | `canRequestCall` / `getCallDenialReason`, profile flags and session checks without ringing | Offline adapter fixtures + live read-only Telegram verification (`SELF_CALL`, peer eligibility, zero ringing RPCs) |
+| [#18](https://github.com/kotakbiasa/tgcalls-js/issues/18) | **Closed** | Folder output by peer/device, MTProto participant registry, camera/screen subscriptions, segmented WAV/MP4 and `manifest.json` | Offline multi-peer fixtures + live audio (`25.68s` WAV) & camera (`640×360` ↔ `1280×720` H.264/AAC MP4 segment rotation, `droppedFrames: 0`) |
+| [#19](https://github.com/kotakbiasa/tgcalls-js/issues/19) | **Closed** | Per-call outgoing recording override, inherited listener default, `false` to disable, path collision checks, `.webm` rejection, recovery retention, `recordingStopped` | Offline finalization tests + live outgoing video call recording (`1280×720` H.264/AAC MP4, `4.24s`, `ffprobe` verified) |
+| [#20](https://github.com/kotakbiasa/tgcalls-js/issues/20) | **Closed** | `getStreamRtmpUrl` (`revoke: false`), RTMP H.264/AAC publisher (`joinRtmp`), and separate server-selected stream viewer (`joinStreamMode`) | Offline loopback/DC fixtures + live Telegram RTMP publish (`dc5-1.rtmp.t.me`), `joinStreamMode` (`mode: 'RTMP'`, `broadcastErrors: 0`), media DC 5 `getStreamChannels` |
+| [#21](https://github.com/kotakbiasa/tgcalls-js/issues/21) | **Open** *(core live-verified)* | Native E2E conference core, subchain relay, invite link, ringing invite, participant mappings, capability-aware `sendConferenceMessage` / `conferenceMessage` (`ntgcalls` 4.x) | Offline port/simulator tests + live 2-account E2E conference (`CONNECTED`, encrypted audio heard, matching 4-emoji fingerprint `🔶🐚🚶🔋`). Removal/rekey remains blocked upstream by `ntgcalls` |
+| [#22](https://github.com/kotakbiasa/tgcalls-js/issues/22) | **Closed** | Opt-in private atomic state file (`statePath`), `flushState`, `resumeFromState` with fresh group rejoin, queue/hold and fresh recording segments | Offline two-process fixtures + live Telegram resume (fresh SSRC, preserved queue, fresh recording segment directory) |
+| [#23](https://github.com/kotakbiasa/tgcalls-js/issues/23) | **Closed** | Unwrap `confirmCall` `{ phoneCall, users }`, remove nonexistent `phone.getCall`, preserve endpoints/protocol/`customParameters`/explicit `p2pAllowed` | Offline teleproto/mtcute regressions + live outgoing P2P (`servers=2`, `CONNECTED`) |
+| [#24](https://github.com/kotakbiasa/tgcalls-js/issues/24) | **Closed** | Investigated `ntgcalls@3.0.7` (`FILE` raw only, `FFMPEG` unimplemented); documented `ffmpeg`/`ffprobe` requirement + `MediaDependencyError` | Native probes + `docs/media-support.md` fallback acceptance completed |
 
 No issue is closed solely because an offline suite passes. The independent review, final combined suite and GitHub CI status must be recorded separately in the delivery report.
 

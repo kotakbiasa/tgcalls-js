@@ -1,6 +1,6 @@
-# Roadmap APIs (unreleased)
+# Extended APIs (v0.9.0+)
 
-These APIs are available on the roadmap branch and are not part of the `v0.8.0` tag. Read [the roadmap](ROADMAP.md) for fixture evidence, live gates and native blockers.
+These APIs are shipped in `v0.9.0` and on `main`. See [the roadmap](ROADMAP.md) for live verification results and `ntgcalls` native capability boundaries.
 
 ## P2P preflight and recording
 
@@ -79,7 +79,7 @@ await tg.leaveConference(handle);
 
 `activeConferences()` lists active handles. `conferenceError` reports asynchronous chain/poll failures. `getEmojiFingerprint(handle)` returns a native display value or null while pending; it is not an attestation of chain health or current cryptographic conformance.
 
-On `ntgcalls@3.0.7`, `removeConferenceParticipants`, `rekeyConference`, and `sendConferenceMessage` reject `UnsupportedNativeCapabilityError`. Encrypted application decoding and crypto-health are also unavailable. The wrapper has no plaintext or JavaScript crypto fallback. `getConferenceCapabilities()` reports these limits and `fullSecurityConformance:false`, `liveVerified:false`. Two-account Telegram audio/video and emoji validation remain open.
+On `ntgcalls@3.0.7`, `removeConferenceParticipants`, `rekeyConference`, and `sendConferenceMessage` reject `UnsupportedNativeCapabilityError`. When running on `ntgcalls >= 4.0.0-alpha03` (which exposes `encryptMessage`/`decryptMessage`), `sendConferenceMessage(handle, text | { text, entities? } | Uint8Array)` and incoming `conferenceMessage` events activate automatically (`getConferenceCapabilities().applicationEncryption === true`). The wrapper never falls back to plaintext or custom JavaScript crypto.
 
 ## Explicit restart recovery
 

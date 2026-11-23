@@ -15,17 +15,18 @@ core by the pytgcalls team — prebuilt binaries, no compiling).
 
 ## Features
 
-- 🎵 **Audio** from a file, direct URL, YouTube (via yt-dlp), or a custom shell PCM pipe.
-- 📃 **Playlist/queue** — `play()` / `enqueue()` / `skip()` / `playOnHold()`; tracks auto-advance, hold music loops while the queue is empty.
-- ⏺️ **Recording** — `startRecording()` / `stopRecording()`; records incoming call audio (native mix of all speakers) to wav/mp3/opus via ffmpeg.
-- 📞 **P2P calls, both directions** *(verified live)* — `listenCalls()` answers 1-on-1 calls, `callUser()` places one; audio + video.
-- ⏺️ **P2P recording** — audio, or video+audio muxed to mp4 (`record: {path}`).
-- 🎬 **Video** from the same source (`video: {width, height, fps}`), camera or presentation channel.
-- 🖥️ **Screen share** via `startPresentation()` / `stopPresentation()`.
-- 🧍 **Idle presence** via `joinIdle()` — stay in a call with no media (stable on UDP-capable hosts).
+- 🎵 **Audio** from a file, direct URL, YouTube (via yt-dlp), custom shell PCM pipe, or real-time `{ kind: 'external' }` PCM frames (no ffmpeg required).
+- 🎙️ **Voice AI / External Frame Bridge** — `pushAudioFrame()` (auto-sliced 10ms PCM), `pushVideoFrame()` (raw I420), and `onAudioFrame()` for live STT/TTS pipelines.
+- 📃 **Playlist & Playback Controls** — `play()` / `enqueue()` / `skip()` / `playOnHold()`, plus `seek()`, `setVolume()` (0–200%), `setSpeed()` (0.5–2.0×), and `setLoop('off' | 'one' | 'all')`.
+- ⏺️ **Recording (Mixed & Per-Participant Folder)** — `startRecording(chat, path)` for mixed audio, or `startRecording(chat, { dir, video })` for segmented per-participant WAV/MP4 + `manifest.json` *(verified live)*.
+- 📞 **P2P Calls, Both Directions** *(verified live)* — `canRequestCall()` / `getCallDenialReason()` preflight without ringing, `listenCalls()`, `callUser()` with per-call `record` override, audio + video.
+- 📡 **RTMP Livestream & Broadcast Viewer** *(verified live)* — `getStreamRtmpUrl()`, `joinRtmp()` (`RtmpPublisher`), and `joinStreamMode()` (`BroadcastController`).
+- 🔐 **E2E Conference Calls** *(core verified live)* — `createConference()`, `joinConference()`, `exportConferenceInvite()`, `inviteConferenceParticipants()`, `getEmojiFingerprint()`, and capability-aware `sendConferenceMessage()` (`ntgcalls` 4.x).
+- 💾 **Opt-in Restart Persistence** *(verified live)* — `statePath`, `flushState()`, and `resumeFromState()` for fresh group rejoin and recording segment recovery.
+- 👥 **Voice Chat Controls & `joinAs`** — join as a channel/alias (`joinAs`), `getParticipants()`, `setRaiseHand()`, `muteParticipant()`, and `setParticipantVolume()`.
+- 🎬 **Video & Screen Share** — camera (`video: { width, height, fps }`) and presentation (`startPresentation()` / `stopPresentation()`).
 - 🔌 **Client-agnostic** — auto-detects teleproto / GramJS / mtcute, or bring your own `MTProtoAdapter`.
-- 🧯 **Typed errors**, injectable `logger`, queue-friendly `setSource()`, clean lifecycle (`leave` / `dispose`).
-- ✅ **Offline test suite** — fake MTProto + the real ntgcalls native core, no Telegram credentials needed.
+- ✅ **Offline test suite** — isolated per-file test runner (`npm test`) with fake MTProto + real ntgcalls native core.
 
 ## Roadmap
 
@@ -126,7 +127,7 @@ tg.on('connectionChange', (chatId, state) => { /* numeric ConnectionState */ });
 | [Guide](docs/guide.md) | Sources, video, presentation, idle, queue, adapters, join flow |
 | [API reference](docs/api.md) | Every method, option, type, event, and error |
 | [Troubleshooting](docs/troubleshooting.md) | Native binary, ffmpeg, UDP/RTMP, YouTube, 2FA |
-| [Roadmap APIs](docs/roadmap-api.md) | Unreleased preflight, recording, RTMP, conference and restart APIs |
+| [Extended APIs](docs/roadmap-api.md) | Preflight, folder recording, RTMP, conference, persistence, external frame bridge, playback & participant controls |
 | [Media support](docs/media-support.md) | Measured decoder support and ffmpeg requirement |
 
 **For AI agents / LLM tooling:** [`llms.txt`](llms.txt) (concise index) and
@@ -137,19 +138,25 @@ Coding agents working on this repo: see [`AGENTS.md`](AGENTS.md).
 
 | Method | Description |
 |---|---|
-| `join(chat, source, opts?)` | Join a voice chat and stream a source |
+| `join(chat, source, opts?)` | Join a voice chat (supports `joinAs`, `video`, `presentation`, `{ kind: 'external' }`) |
 | `joinYouTube(chat, url, opts?)` | Resolve via yt-dlp, then `join` |
 | `joinIdle(chat, opts?)` | Join with no media (idle presence) |
-| `startPresentation(chat, source, video?)` / `stopPresentation(chat)` | Screen-share channel |
-| `setSource(chat, source)` | Swap the audio of an active call (queue) |
-| `pause / resume / mute / unmute(chat)` | Native media controls |
-| `time(chat)` | Seconds streamed |
+| `play / enqueue / skip / playOnHold` | Playlist & queue management |
+| `seek / setVolume / setSpeed / setLoop` | Playback seek, volume (0–200%), speed (0.5–2×), and loop (`off`/`one`/`all`) |
+| `pushAudioFrame / pushVideoFrame / onAudioFrame` | Real-time external PCM/I420 frame bridge (Voice AI) |
+| `startRecording(chat, path \| { dir, video })` | Mixed audio or per-participant folder recording |
+| `canRequestCall / getCallDenialReason` | P2P preflight eligibility check without ringing |
+| `listenCalls / callUser / stopListeningCalls` | Incoming & outgoing 1-on-1 P2P audio/video calls + recording |
+| `getStreamRtmpUrl / joinRtmp / joinStreamMode` | RTMP livestream publishing & broadcast stream viewing |
+| `createConference / joinConference / leaveConference` | E2E conference lifecycle, invites, emoji fingerprint & messages |
+| `getParticipants / setRaiseHand / muteParticipant / setParticipantVolume` | Voice chat participant controls |
+| `flushState / resumeFromState` | Opt-in state persistence & fresh restart recovery |
+| `startPresentation / stopPresentation` | Screen-share channel |
+| `pause / resume / mute / unmute / time` | Native media controls & elapsed seconds |
 | `leave(chat)` / `dispose()` | Leave one call / tear down everything |
-| `activeCalls() / getCall(chat) / isActive(chat)` | Introspection |
-| `resolveChatId(chat)` | username / t.me link / id → marked id |
-| `on(event, cb)` | `streamEnd`, `connectionChange`, `update` |
+| `on(event, cb)` | `streamEnd`, `connectionChange`, `remoteSourceChange`, `recordingStopped`, `recordingError`, `broadcastError`, `conferenceMessage`, `conferenceError`, `persistenceError`, `update` |
 
-Full signatures and types: [API reference](docs/api.md).
+Full signatures and types: [API reference](docs/api.md) and [Extended APIs](docs/roadmap-api.md).
 
 ## How it works
 

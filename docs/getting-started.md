@@ -21,7 +21,7 @@ brew install ffmpeg yt-dlp         # macOS
 ## Install the package
 
 ```bash
-npm install --allow-git=all github:kotakbiasa/tgcalls-js#v0.8.0
+npm install --allow-git=all github:kotakbiasa/tgcalls-js#v0.9.0
 ```
 
 npm 12+ blocks git dependencies by default (`EALLOWGIT`); `--allow-git=all`

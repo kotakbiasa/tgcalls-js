@@ -1,26 +1,25 @@
 # tgcalls-js
 
-> Telegram audio/video calls for Node.js with teleproto/GramJS or mtcute and ntgcalls. Last approved release: v0.8.0. The roadmap branch adds unreleased features with separate offline, live and native capability gates.
+> Telegram audio/video calls for Node.js with teleproto/GramJS or mtcute and ntgcalls. Latest release: v0.9.0 (plus external frame bridge, playback controls, joinAs, participant controls, and capability-aware conference E2E messages on main).
 
 Key facts:
 - A user-account session is required; bots cannot join calls.
-- File/URL container sources, video muxing and RTMP publication need ffmpeg. Video metadata and folder validation need ffprobe. Caller-owned raw PCM shell producers can use other tools.
-- Stable install: `npm install --allow-git=all github:kotakbiasa/tgcalls-js#v0.8.0`. Distribution uses git tags.
-- New branch APIs are not included in v0.8.0. Read the roadmap before claiming parity or live validation.
+- File/URL container sources, video muxing and RTMP publication need ffmpeg. Video metadata and folder validation need ffprobe. `{ kind: 'external' }` PCM sources and caller-owned shell producers need no ffmpeg.
+- Stable install: `npm install --allow-git=all github:kotakbiasa/tgcalls-js#v0.9.0`. Distribution uses git tags.
 - Native dependency is pinned to ntgcalls 3.0.7; byte inputs require plain JS arrays at its NAPI boundary.
 - ConnectionState runtime values: CONNECTING=1, CONNECTED=2, FAILED=4, TIMEOUT=8, CLOSED=16.
-- Full conference removal/rekey, encrypted in-call application messages and crypto-health are unavailable in this native binding. Never substitute plaintext or custom crypto.
-- `npm test` discovers each test/*.ts entrypoint in a separate process; build dist before running smoke.
+- Conference E2E create/invite/join/audio/emoji are live-verified; `sendConferenceMessage` / `conferenceMessage` activate automatically on `ntgcalls >= 4.0.0-alpha03` and reject with `UnsupportedNativeCapabilityError` on `3.0.7`. Removal/rekey remains upstream-blocked.
+- `npm test` discovers each `test/*.ts` entrypoint in a separate process; build `dist` before running `npm run smoke`.
 
 ## Documentation
 
 - [Getting started](docs/getting-started.md): install and user sessions.
 - [Guide](docs/guide.md): sources, groups, queue and lifecycle.
-- [API reference](docs/api.md): existing public API.
-- [Roadmap APIs](docs/roadmap-api.md): unreleased preflight, folder recording, RTMP, conference and persistence.
-- [Roadmap evidence](docs/ROADMAP.md): issue status, corrections, live gates and native blockers.
+- [API reference](docs/api.md): core public API.
+- [Extended APIs](docs/roadmap-api.md): preflight, folder recording, RTMP, conference, persistence, external frame bridge, playback & participant controls.
+- [Roadmap status](docs/ROADMAP.md): issue status, live verification evidence and native limits.
 - [Media support](docs/media-support.md): native decoder limits and real container probes.
 - [Troubleshooting](docs/troubleshooting.md): native install, dependencies and signaling.
 - [Contributor notes](AGENTS.md): verification and generation commands.
-- [Changelog](CHANGELOG.md): released and unreleased changes.
-- [Full bundle](llms-full.txt): generated from the declared sources in scripts/generate-docs.py.
+- [Changelog](CHANGELOG.md): release history.
+- [Full bundle](llms-full.txt): generated from the declared sources in `scripts/generate-docs.py`.
