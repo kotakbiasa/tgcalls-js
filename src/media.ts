@@ -4,19 +4,40 @@
  */
 
 import { spawn } from 'child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import { MediaDependencyError } from './errors.js';
 import { MediaSource } from 'ntgcalls';
 import type { AudioSource, TgCallsOptions, VideoOptions } from './types.js';
 
+/** Check PATH without spawning after WebRTC has started native worker threads. */
+export function requireMediaExecutable(executable: string, binary: 'ffmpeg' | 'ffprobe'): string {
+  const hasDirectory = /[\\/]/.test(executable);
+  const directories = hasDirectory ? [''] : (process.env.PATH ?? '').split(path.delimiter);
+  const extensions = process.platform === 'win32' && !path.extname(executable)
+    ? (process.env.PATHEXT ?? '.EXE;.CMD;.BAT;.COM').split(';') : [''];
+  for (const directory of directories) {
+    for (const extension of extensions) {
+      const candidate = hasDirectory ? executable + extension : path.join(directory, executable + extension);
+      try {
+        if (!fs.statSync(candidate).isFile()) {continue;}
+        fs.accessSync(candidate, fs.constants.X_OK);
+        return executable;
+      } catch { /* try the next PATH entry */ }
+    }
+  }
+  throw new MediaDependencyError(binary, executable, binary === 'ffmpeg' ? 'ffmpegPath' : 'ffprobePath');
+}
+
 /** Build the shell command that pipes decoded s16le PCM to stdout. */
 export function pcmCommand(source: AudioSource, opts: TgCallsOptions): string {
-  const ffmpeg = opts.ffmpegPath ?? 'ffmpeg';
+  if (source.kind === 'shell') {return source.command;}
+  const ffmpeg = shellQuote(requireMediaExecutable(opts.ffmpegPath ?? 'ffmpeg', 'ffmpeg'));
   switch (source.kind) {
     case 'file':
       return `${ffmpeg} -vn -i ${shellQuote(source.path)} -loglevel panic -f s16le -ac 2 -ar 48000 pipe:1`;
     case 'url':
       return `${ffmpeg} -vn -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 2 -i ${shellQuote(source.audioUrl ?? source.url)} -loglevel panic -f s16le -ac 2 -ar 48000 pipe:1`;
-    case 'shell':
-      return source.command;
   }
 }
 
@@ -45,7 +66,8 @@ export function recordingDescription(
   channels = 1,
   ffmpegPath = 'ffmpeg',
 ) {
-  const input = `${ffmpegPath} -loglevel error -f s16le -ar ${sampleRate} -ac ${channels} -i pipe:0 -y ${shellQuote(path)}`;
+  const ffmpeg = shellQuote(requireMediaExecutable(ffmpegPath, 'ffmpeg'));
+  const input = `${ffmpeg} -loglevel error -f s16le -ar ${sampleRate} -ac ${channels} -i pipe:0 -y ${shellQuote(path)}`;
   return {
     mediaSource: MediaSource.SHELL,
     input,
@@ -65,7 +87,7 @@ export async function probeVideo(
   opts: TgCallsOptions = { client: {} as never },
   target: VideoOptions = {},
 ): Promise<{ width: number; height: number; fps: number }> {
-  const ffprobe = opts.ffprobePath ?? 'ffprobe';
+  const ffprobe = requireMediaExecutable(opts.ffprobePath ?? 'ffprobe', 'ffprobe');
   return new Promise((resolve) => {
     const args = [
       '-v', 'error',
@@ -162,7 +184,7 @@ export function videoDescription(
   video: VideoOptions,
   opts: TgCallsOptions,
 ) {
-  const ffmpeg = opts.ffmpegPath ?? 'ffmpeg';
+  const ffmpeg = shellQuote(requireMediaExecutable(opts.ffmpegPath ?? 'ffmpeg', 'ffmpeg'));
   const width = video.width ? (video.width % 2 !== 0 ? video.width - 1 : video.width) : 1280;
   const height = video.height ? (video.height % 2 !== 0 ? video.height - 1 : video.height) : 720;
   const fps = video.fps ?? 30;

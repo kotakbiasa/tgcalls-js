@@ -13,7 +13,7 @@
  *   5. ntgcalls.connect(chatId, connParams)   → media starts flowing
  */
 
-import { NTgCalls, ConnectionState, StreamMode, StreamType } from 'ntgcalls';
+import { NTgCalls, ConnectionState, ConnectionMode, MediaSource, StreamMode, StreamType, StreamDevice, StreamStatus } from 'ntgcalls';
 import type {
   ActiveCall,
   AudioSource,
@@ -23,6 +23,8 @@ import type {
   MTProtoAdapter,
   RecordOptions,
   RecordingInfo,
+  FolderRecordingTarget,
+  RecordingStoppedInfo,
   RemoteSourceInfo,
   StreamEndInfo,
   TgCallsOptions,
@@ -30,8 +32,18 @@ import type {
 } from './types.js';
 import { createAdapter, extractSsrc, sleep } from './adapters/index.js';
 import { AlreadyInCallError, NoVoiceChatError } from './errors.js';
-import { audioDescription, videoDescription, recordingDescription, resolveYouTube, resolveYouTubeStreams, probeVideo } from './media.js';
-import { P2PCallManager, type ListenCallsOptions } from './calls.js';
+import { audioDescription, videoDescription, recordingDescription, requireMediaExecutable, resolveYouTube, resolveYouTubeStreams, probeVideo } from './media.js';
+import { P2PCallManager, type ListenCallsOptions, type OutgoingCallOptions } from './calls.js';
+import { getCallDenialReason as checkCall, type CallCheckOptions, type CallDenialReason } from './eligibility.js';
+import { NativeEventRouter } from './native-events.js';
+import { FolderRecorder } from './folder-recording.js';
+import { BroadcastController, type BroadcastAdapterPort } from './broadcast.js';
+import { ConferenceController, type ConferenceAdapter, type ConferenceHandle, type ConferenceRef, type ConferenceOptions, type NativeConferencePort } from './conference.js';
+import { RtmpPublisher, type RtmpPublisherOptions } from './rtmp.js';
+import { GroupParticipantController } from './group-participants.js';
+import { type ParticipantInfo } from './participants.js';
+import { asBigInt0 } from './adapters/utils.js';
+import { StateStore, ResumeController, type SavedGroup, type ResumeOptions, type ResumeReport, type PersistenceError } from './persistence.js';
 
 export interface TgCallsEvents {
   /** Fired when the native audio stream ends (e.g. file finished). */
@@ -40,13 +52,25 @@ export interface TgCallsEvents {
   connectionChange: (chatId: bigint, state: ConnectionState) => void | Promise<void>;
   /** Raw TL updates related to group calls (pass-through). */
   update: (update: unknown) => void | Promise<void>;
+  recordingStopped: (chatId: bigint, info: RecordingStoppedInfo) => void | Promise<void>;
+  recordingError: (chatId: bigint, error: Error) => void | Promise<void>;
+  broadcastError: (chatId: bigint, error: Error) => void | Promise<void>;
+  conferenceError: (error: unknown) => void | Promise<void>;
+  persistenceError: (error: PersistenceError) => void | Promise<void>;
   /** A remote participant's stream (camera / microphone / screen) changed state. */
   remoteSourceChange: (chatId: bigint, source: RemoteSourceInfo) => void | Promise<void>;
+}
+
+interface ViewerSession {
+  nativeId: bigint; call: unknown; dcId: number; source: number;
+  mode: 'RTC' | 'STREAM' | 'RTMP'; controller?: BroadcastController;
+  options: { requireStream?: boolean };
 }
 
 export class TgCallsClient {
   /** Direct access to the underlying native instance (advanced use). */
   readonly ntg: NTgCalls;
+  private readonly nativeEvents: NativeEventRouter;
 
   /** Run a user event handler without letting a throw/reject crash the process. */
   private fireAndForget(fn: () => unknown): void {
@@ -90,13 +114,60 @@ export class TgCallsClient {
   private readonly playlists = new Map<bigint, { queue: AudioSource[]; hold: AudioSource | null }>();
   /** Per-chat active recording (incoming audio mixed by ntgcalls → ffmpeg). */
   private readonly recordings = new Map<bigint, RecordingInfo>();
+  private static nextFeatureId = -8_000_000_000_000_000_000n;
+  private readonly viewers = new Map<bigint, ViewerSession>();
+  private readonly featureNativeIds = new Set<bigint>();
+  private readonly publishers = new Map<bigint, RtmpPublisher>();
+  private conferenceController?: ConferenceController;
+  private readonly folderRecorders = new Map<bigint, FolderRecorder>();
+  private readonly recordingOperations = new Map<bigint, Promise<unknown>>();
+  private readonly groupParticipants = new Map<bigint, GroupParticipantController>();
   /** Active incoming-P2P-call listener, if any. */
   private callManager: P2PCallManager | null = null;
+  private readonly stateStore?: StateStore;
+  private readonly restoreController?: ResumeController;
+  private readonly desiredGroups = new Map<string, SavedGroup>();
+  private readonly pausedGroups = new Set<bigint>();
+  private readonly groupJoinOptions = new Map<bigint, JoinOptions>();
+  private readonly recordingSegments = new Map<bigint, number>();
+  private stateInitialization?: Promise<void>;
+  private stateWrites: Promise<void> = Promise.resolve();
+  private persistenceSuspended = 0;
 
   constructor(opts: TgCallsOptions) {
     this.opts = { logger: { error: console.error.bind(console) }, ...opts };
     this.adapter = createAdapter(opts.client, { Api: opts.Api });
     this.ntg = new NTgCalls();
+    this.nativeEvents = new NativeEventRouter(this.ntg, (error) => {
+      this.opts.logger?.error('[tgcalls-js] native event consumer failed:', error);
+    });
+    if (opts.statePath) {
+      this.stateStore = new StateStore(opts.statePath, {
+        ...opts.persistence, onError: (error) => this.emit('persistenceError', error),
+      });
+      this.restoreController = new ResumeController(this.stateStore, {
+        isActive: (id) => this.calls.has(id) || this.joining.has(id),
+        joinGroup: async (id, source, flags) => {
+          const join: JoinOptions = {
+            allowCreate: false, muted: true, paused: true, autoLeave: false,
+            inviteHash: flags.inviteHash,
+            ...(flags.video ? { video: flags.video.options, presentation: flags.video.device === 'screen' } : {}),
+          };
+          if (source) {return this.join(id, source, join);}
+          return this.joinIdle(id, join);
+        },
+        joinViewer: (id) => this.joinStreamMode(id),
+        restorePlaylist: async (id, playlist) => {this.playlists.set(id, { queue: [...playlist.queue], hold: playlist.hold });},
+        setPaused: async (id, paused) => {if (paused) {await this.pause(id);} else {await this.resume(id);}},
+        setMuted: async (id, muted) => {if (muted) {await this.mute(id);} else {await this.unmute(id);}},
+        setAutoLeave: async (id, autoLeave) => {const call = this.calls.get(id); if (!call) {throw new Error('Restored group is no longer active');} call.autoLeave = autoLeave;},
+        startRecording: async (id, target, recordOptions) => {
+          await this.startRecording(id, target);
+          this.recordingSegments.set(id, recordOptions.segment);
+        },
+        rollback: (id) => this.leave(id),
+      }, opts.restore);
+    }
   }
 
   /**
@@ -156,6 +227,61 @@ export class TgCallsClient {
     return id !== undefined && this.calls.has(id);
   }
 
+  /** Wait for the latest desired group snapshot to reach the state file. */
+  async flushState(): Promise<void> {
+    if (!this.stateStore) {return;}
+    await this.initializeState();
+    for (const id of this.calls.keys()) {await this.persistGroup(id);}
+    await this.stateWrites;
+  }
+
+  /** Explicitly rejoin saved groups; P2P/conference keys and native sockets are never restored. */
+  async resumeFromState(options: ResumeOptions = {}): Promise<ResumeReport> {
+    if (!this.restoreController) {throw new Error('resumeFromState requires statePath');}
+    await this.initializeState();
+    this.persistenceSuspended++;
+    let report: ResumeReport;
+    try {report = await this.restoreController.resume(options);}
+    finally {this.persistenceSuspended--;}
+    for (const id of report.restored) {await this.persistGroup(id);}
+    return report;
+  }
+
+  private initializeState(): Promise<void> {
+    if (!this.stateStore) {return Promise.resolve();}
+    return this.stateInitialization ??= this.stateStore.load().then((saved) => {
+      for (const group of saved.groups) {this.desiredGroups.set(group.chatId, group);}
+    });
+  }
+
+  private persistGroup(id: bigint, remove = false): Promise<void> {
+    if (!this.stateStore || this.persistenceSuspended) {return Promise.resolve();}
+    const update = this.stateWrites.then(async () => {
+      await this.initializeState();
+      const active = this.calls.get(id);
+      if (remove) {this.desiredGroups.delete(String(id));}
+      else if (active) {
+        const video = this.videoState.get(id);
+        const queue = this.playlists.get(id);
+        const recording = this.recordings.get(id);
+        const join = this.groupJoinOptions.get(id);
+        this.desiredGroups.set(String(id), {
+          kind: this.viewers.has(id) ? 'group-viewer' : 'group-rtc', chatId: String(id),
+          source: this.isIdleSource(active.source) ? null : { ...active.source },
+          join: { muted: active.muted, autoLeave: active.autoLeave, ...(join?.inviteHash ? { inviteHash: join.inviteHash } : {}) },
+          paused: this.pausedGroups.has(id),
+          playlist: { queue: (queue?.queue ?? []).map((source) => ({ ...source })), hold: queue?.hold ? { ...queue.hold } : null },
+          ...(video ? { video: { device: video.device, options: { ...video.target } } } : {}),
+          ...(recording ? { recording: { target: recording.mode === 'folder'
+            ? { dir: recording.path, video: recording.video } : recording.path, segment: this.recordingSegments.get(id) ?? 0 } } : {}),
+        });
+      }
+      await this.stateStore!.save([...this.desiredGroups.values()]);
+    });
+    this.stateWrites = update.catch(() => {}); // returned promise/event retains the original error
+    return update;
+  }
+
   // ------------------------------------------------------------------ join
 
   /**
@@ -172,6 +298,7 @@ export class TgCallsClient {
     let inputCall: unknown;
     let joinParams: string | undefined;
     try {
+      await this.initializeState();
       inputCall = await this.adapter.getGroupCall(chatId, options.allowCreate === true);
 
       // Native join params — created exactly once; the SAME params string must
@@ -222,6 +349,9 @@ export class TgCallsClient {
       this.videoState.set(chatId, { device: 'camera', target: targetOpts });
     }
     await this.ntg.setStreamSources(chatId, StreamMode.CAPTURE, media);
+    if (options.muted) {await this.ntg.mute(chatId);}
+    if (options.paused) {await this.ntg.pause(chatId); this.pausedGroups.add(chatId);}
+    this.wireNative();
 
     const connParams = await this.joinGroupCall(inputCall, joinParams, {
       ...options,
@@ -273,7 +403,9 @@ export class TgCallsClient {
       autoLeave: options.autoLeave !== false,
       joinedAt: Date.now(),
     });
+    this.groupJoinOptions.set(chatId, { ...options });
     this.wireNative();
+    await this.persistGroup(chatId);
     return { chatId, call: inputCall, ssrc };
   }
 
@@ -325,6 +457,7 @@ export class TgCallsClient {
     let joinParams: string | undefined;
     let joinAttempted = false;
     try {
+      await this.initializeState();
       inputCall = await this.adapter.getGroupCall(chatId, false).catch(() => null);
       if (inputCall === null) {
         if (options.allowCreate !== true) {
@@ -344,6 +477,9 @@ export class TgCallsClient {
           videoStopped: true,
         });
       }, 'JoinGroupCall succeeded but no UpdateGroupCallConnection was received');
+      await this.ntg.mute(chatId);
+      if (options.paused) {await this.ntg.pause(chatId); this.pausedGroups.add(chatId);}
+      this.wireNative();
       await this.ntg.connect(chatId, params, false);
 
       const ssrc = extractSsrc(joinParams);
@@ -358,7 +494,9 @@ export class TgCallsClient {
         autoLeave: false,
         joinedAt: Date.now(),
       });
+      this.groupJoinOptions.set(chatId, { ...options });
       this.wireNative();
+      await this.persistGroup(chatId);
       return { chatId, call: inputCall, ssrc };
     } catch (err) {
       this.calls.delete(chatId);
@@ -376,6 +514,127 @@ export class TgCallsClient {
     }
   }
 
+  private allocateFeatureId(): bigint {
+    const id = --TgCallsClient.nextFeatureId;
+    this.featureNativeIds.add(id);
+    return id;
+  }
+  private nativeGroupId(id: bigint): bigint { return this.viewers.get(id)?.nativeId ?? id; }
+  private publicGroupId(nativeId: bigint): bigint {
+    for (const [id, viewer] of this.viewers) if (viewer.nativeId === nativeId) return id;
+    return nativeId;
+  }
+
+  /** Prepare an RTMP publisher; options.source starts the actual ffmpeg upload. */
+  async joinRtmp(chat: ChatRef, url: string, key: string, options: RtmpPublisherOptions & {
+    source?: AudioSource; video?: VideoOptions; allowCreate?: boolean;
+  } = {}): Promise<RtmpPublisher> {
+    const id = await this.resolveChatId(chat);
+    const adapter = this.adapter as MTProtoAdapter & { getGroupCallInfo?: (call: unknown) => Promise<{ rtmpStream: boolean }> };
+    if (!adapter.getGroupCallInfo) throw new Error('RTMP publishing needs group metadata adapter support');
+    requireMediaExecutable(options.ffmpegPath ?? this.opts.ffmpegPath ?? 'ffmpeg', 'ffmpeg');
+    const publisher = new RtmpPublisher(url, key, { ffmpegPath: this.opts.ffmpegPath, logger: this.opts.logger, ...options });
+    const call = await adapter.getGroupCall(id, options.allowCreate === true, true);
+    const info = await adapter.getGroupCallInfo(call);
+    if (!info.rtmpStream) throw new Error('Existing voice chat is not an RTMP stream');
+    const previous = this.publishers.get(id);
+    if (previous) await previous.close();
+    this.publishers.set(id, publisher);
+    try { if (options.source) await publisher.play(options.source, options.video); }
+    catch (error) { this.publishers.delete(id); await publisher.close(); throw error; }
+    return publisher;
+  }
+
+  async getStreamRtmpUrl(chat: ChatRef): Promise<{ url: string; key: string }> {
+    const adapter = this.adapter as MTProtoAdapter & { getStreamRtmpUrl?: (id: bigint, options: { revoke: false }) => Promise<{ url: string; key: string }> };
+    if (!adapter.getStreamRtmpUrl) throw new Error('This adapter cannot fetch RTMP endpoints');
+    return adapter.getStreamRtmpUrl(await this.resolveChatId(chat), { revoke: false });
+  }
+
+  /** Join with server-selected stream mode. RTC is refused unless explicitly allowed. */
+  async joinStreamMode(chat: ChatRef, options: { requireStream?: boolean } = {}): Promise<JoinResult & { mode: 'RTC' | 'STREAM' | 'RTMP' }> {
+    const id = await this.resolveChatId(chat);
+    if (this.calls.has(id) || this.joining.has(id)) throw new AlreadyInCallError(id);
+    const adapter = this.adapter as MTProtoAdapter & Partial<BroadcastAdapterPort> & {
+      getGroupCallInfo?: (call: unknown) => Promise<{ streamDcId?: number }>;
+    };
+    if (!adapter.getGroupCallInfo || !adapter.getStreamChannels || !adapter.downloadStreamChunk) throw new Error('This adapter does not support broadcast viewing');
+    this.wireBroadcast();
+    this.joining.add(id);
+    const viewer: ViewerSession = { nativeId: this.allocateFeatureId(), call: undefined, dcId: 0, source: 0, mode: 'RTC', options };
+    this.viewers.set(id, viewer);
+    try {
+      await this.initializeState();
+      this.wireNative();
+      await this.prepareViewer(id, viewer);
+      await this.persistGroup(id);
+      return { chatId: id, call: viewer.call, ssrc: viewer.source, mode: viewer.mode };
+    } catch (error) {
+      await this.leaveResolved(id);
+      throw error;
+    } finally { this.joining.delete(id); }
+  }
+
+  private async prepareViewer(id: bigint, viewer: ViewerSession, signal?: AbortSignal): Promise<{ call: unknown; dcId: number }> {
+    const adapter = this.adapter as MTProtoAdapter & BroadcastAdapterPort & {
+      getGroupCallInfo(call: unknown): Promise<{ streamDcId?: number }>;
+    };
+    signal?.throwIfAborted();
+    viewer.call = await adapter.getGroupCall(id, false);
+    const info = await adapter.getGroupCallInfo(viewer.call);
+    signal?.throwIfAborted();
+    const payload = await this.ntg.createCall(viewer.nativeId);
+    viewer.source = extractSsrc(payload);
+    let joined = false;
+    try {
+      const params = await this.withConnectionParams(async () => {
+        joined = true;
+        return adapter.joinGroupCall(viewer.call, payload, { muted: true, videoStopped: true });
+      }, 'Broadcast join returned no connection parameters');
+      signal?.throwIfAborted();
+      const connection = JSON.parse(params) as { stream?: boolean; rtmp?: boolean };
+      viewer.mode = connection.stream === true ? connection.rtmp === true ? 'RTMP' : 'STREAM' : 'RTC';
+      if (viewer.options.requireStream !== false && viewer.mode === 'RTC') throw new Error('Server selected RTC; stream mode is unavailable');
+      viewer.dcId = info.streamDcId ?? 0;
+      if (viewer.mode !== 'RTC') {
+        if (!Number.isInteger(viewer.dcId) || viewer.dcId < 1) throw new Error('Broadcast stream has no valid media DC');
+        if (!viewer.controller) viewer.controller = new BroadcastController({
+          handle: viewer.nativeId, call: viewer.call, dcId: viewer.dcId,
+          native: {
+            sendBroadcastPart: (handle, segment, part, status, quality, bytes) => this.ntg.sendBroadcastPart(viewer.nativeId, segment, part, status, quality, bytes as unknown as Buffer),
+            sendBroadcastTimestamp: (handle, timestamp) => this.ntg.sendBroadcastTimestamp(viewer.nativeId, timestamp),
+          },
+          adapter, logger: this.opts.logger,
+          rejoin: async (abort) => {
+            // Controller has drained native requests; never stop the controller from its own hook.
+            const old = this.calls.get(id), oldNativeId = viewer.nativeId;
+            await this.recordingOperation(id, () => this.stopRecordingInner(id, 'rejoin'));
+            viewer.nativeId = this.allocateFeatureId();
+            await this.ntg.stop(oldNativeId);
+            if (old) await adapter.leaveGroupCall(old.call, old.ssrc).catch(() => {});
+            return this.prepareViewer(id, viewer, abort);
+          },
+          onError: (error) => this.emit('broadcastError', id, error),
+        });
+      }
+      await this.ntg.setStreamSources(viewer.nativeId, StreamMode.PLAYBACK, {
+        microphone: { mediaSource: MediaSource.EXTERNAL, sampleRate: 48000, channelCount: 1, input: '', keepOpen: true },
+        camera: { mediaSource: MediaSource.EXTERNAL, width: 1280, height: 720, fps: 25, input: '', keepOpen: true },
+        screen: { mediaSource: MediaSource.EXTERNAL, width: 1280, height: 720, fps: 25, input: '', keepOpen: true },
+      });
+      await this.ntg.mute(viewer.nativeId);
+      await this.ntg.connect(viewer.nativeId, params, false);
+      signal?.throwIfAborted();
+      this.calls.set(id, { chatId: id, call: viewer.call, ssrc: viewer.source, source: { kind: 'shell', command: '' },
+        videoActive: false, presentationActive: false, muted: true, autoLeave: false, joinedAt: Date.now() });
+      return { call: viewer.call, dcId: viewer.dcId };
+    } catch (error) {
+      if (joined) await adapter.leaveGroupCall(viewer.call, viewer.source).catch(() => {});
+      await this.ntg.stop(viewer.nativeId).catch(() => {});
+      throw error;
+    }
+  }
+
   // ---------------------------------------------------------------- control
 
   /**
@@ -384,7 +643,13 @@ export class TgCallsClient {
    */
   async leave(chatId: ChatRef): Promise<void> {
     const id = await this.resolveChatId(chatId);
+    const publisher = this.publishers.get(id);
+    if (publisher) { await publisher.close(); this.publishers.delete(id); }
     await this.leaveResolved(id);
+    this.pausedGroups.delete(id);
+    this.groupJoinOptions.delete(id);
+    this.recordingSegments.delete(id);
+    await this.persistGroup(id, true);
   }
 
   /** Stop local media and leave MTProto using the call metadata captured before cleanup. */
@@ -393,19 +658,25 @@ export class TgCallsClient {
     if (pending !== undefined) {return pending;}
 
     const active = this.calls.get(id);
+    const viewer = this.viewers.get(id);
     this.calls.delete(id);
     this.videoState.delete(id);
     this.ended.delete(id);
     this.playlists.delete(id);
-    this.recordings.delete(id);
 
     let finish!: () => void;
     const cleanup = new Promise<void>((resolve) => { finish = resolve; });
     this.pendingLeave.set(id, cleanup);
     void (async () => {
       try {
+        try { await this.recordingOperation(id, () => this.stopRecordingInner(id, 'leave')); }
+        catch (error) { this.emit('recordingError', id, error instanceof Error ? error : new Error(String(error))); }
+        this.groupParticipants.get(id)?.close();
+        this.groupParticipants.delete(id);
+        try { await viewer?.controller?.stop(); } catch (error) { this.opts.logger?.error('[tgcalls-js] viewer stop failed:', error); }
+        this.viewers.delete(id);
         try {
-          await this.ntg.stop(id);
+          await this.ntg.stop(viewer?.nativeId ?? id);
         } catch { /* already stopped */ }
         if (active?.presentationActive) {
           try {
@@ -429,34 +700,42 @@ export class TgCallsClient {
 
   async pause(chatId: ChatRef): Promise<boolean> {
     const id = await this.resolveChatId(chatId);
-    return this.ntg.pause(id);
+    const ok = await this.ntg.pause(this.nativeGroupId(id));
+    this.pausedGroups.add(id);
+    await this.persistGroup(id);
+    return ok;
   }
 
   async resume(chatId: ChatRef): Promise<boolean> {
     const id = await this.resolveChatId(chatId);
-    return this.ntg.resume(id);
+    const ok = await this.ntg.resume(this.nativeGroupId(id));
+    this.pausedGroups.delete(id);
+    await this.persistGroup(id);
+    return ok;
   }
 
   async mute(chatId: ChatRef): Promise<boolean> {
     const id = await this.resolveChatId(chatId);
-    const ok = await this.ntg.mute(id);
+    const ok = await this.ntg.mute(this.nativeGroupId(id));
     const active = this.calls.get(id);
     if (active) {active.muted = true;}
+    await this.persistGroup(id);
     return ok;
   }
 
   async unmute(chatId: ChatRef): Promise<boolean> {
     const id = await this.resolveChatId(chatId);
-    const ok = await this.ntg.unmute(id);
+    const ok = await this.ntg.unmute(this.nativeGroupId(id));
     const active = this.calls.get(id);
     if (active) {active.muted = false;}
+    await this.persistGroup(id);
     return ok;
   }
 
   /** Seconds streamed so far. */
   async time(chatId: ChatRef): Promise<number> {
     const id = await this.resolveChatId(chatId);
-    const t = await this.ntg.time(id, StreamMode.CAPTURE);
+    const t = await this.ntg.time(this.nativeGroupId(id), StreamMode.CAPTURE);
     return Number(t);
   }
 
@@ -465,11 +744,12 @@ export class TgCallsClient {
    * emojis — the out-of-band check against a man in the middle). Returns `null`
    * when we are not in that call or the native core has not computed it yet.
    */
-  async getEmojiFingerprint(chat: ChatRef): Promise<string | null> {
+  async getEmojiFingerprint(chat: ChatRef | ConferenceHandle): Promise<string | null> {
+    if (typeof chat === 'object') return this.conferences().getEmojiFingerprint(chat);
     const id = await this.resolveChatId(chat);
     if (!this.calls.has(id) && !this.activeCallPeers().includes(id)) {return null;}
     try {
-      const emojis = await this.ntg.getEmojisFingerprint(id);
+      const emojis = await this.ntg.getEmojisFingerprint(this.nativeGroupId(id));
       return emojis && emojis.length > 0 ? emojis : null;
     } catch {
       return null;
@@ -480,9 +760,9 @@ export class TgCallsClient {
   async getConnectionMode(chat: ChatRef): Promise<string | null> {
     const id = await this.resolveChatId(chat);
     try {
-      const mode = await this.ntg.getConnectionMode(id) as unknown as number;
-      const names = ['NONE', 'RTC', 'STREAM', 'RTMP'];
-      return names[mode] ?? String(mode);
+      const mode = await this.ntg.getConnectionMode(this.nativeGroupId(id));
+      return new Map<number, string>([[ConnectionMode.NONE, 'NONE'], [ConnectionMode.RTC, 'RTC'],
+        [ConnectionMode.STREAM, 'STREAM'], [ConnectionMode.RTMP, 'RTMP']]).get(mode) ?? String(mode);
     } catch {
       return null;
     }
@@ -497,6 +777,7 @@ export class TgCallsClient {
     if (!this.calls.has(id)) {
       throw new Error(`No active call in chat ${id}`);
     }
+    if (this.viewers.has(id) && this.viewers.get(id)!.mode !== 'RTC') throw new Error('Stream viewers cannot capture media; use joinRtmp for publishing');
     const media: Record<string, unknown> = {
       microphone: audioDescription(source, this.opts),
     };
@@ -513,9 +794,10 @@ export class TgCallsClient {
       }
     }
     this.ended.delete(id);
-    await this.ntg.setStreamSources(id, StreamMode.CAPTURE, media);
+    await this.ntg.setStreamSources(this.nativeGroupId(id), StreamMode.CAPTURE, media);
     const active = this.calls.get(id);
     if (active) {active.source = source;}
+    await this.persistGroup(id);
   }
 
   // ------------------------------------------------------------- playlist
@@ -556,6 +838,7 @@ export class TgCallsClient {
       return;
     }
     pl.queue.push(source);
+    await this.persistGroup(id);
   }
 
   /** Alias of enqueue(): queue a track after the current one. */
@@ -577,7 +860,7 @@ export class TgCallsClient {
     if (next) {
       await this.setSource(id, next);
     } else {
-      await this.ntg.pause(id);
+      await this.ntg.pause(this.nativeGroupId(id));
     }
   }
 
@@ -585,6 +868,7 @@ export class TgCallsClient {
   async playOnHold(chat: ChatRef, source: AudioSource | null): Promise<void> {
     const id = await this.resolveChatId(chat);
     this.ensurePlaylist(id).hold = source;
+    await this.persistGroup(id);
   }
 
   /** Clear the queue and the hold track (the current track keeps playing). */
@@ -592,6 +876,7 @@ export class TgCallsClient {
     const id = await this.resolveChatId(chat);
     const pl = this.playlists.get(id);
     if (pl) {pl.queue = []; pl.hold = null;}
+    await this.persistGroup(id);
   }
 
   /** The source currently playing in this chat, or null. Sync (resolved aliases only). */
@@ -640,39 +925,129 @@ export class TgCallsClient {
    * to ffmpeg, which encodes the file. Requires an active call. One recording
    * per chat; calling again replaces it. Stop with stopRecording().
    */
-  async startRecording(chat: ChatRef, path: string, options: RecordOptions = {}): Promise<RecordingInfo> {
+  async startRecording(chat: ChatRef, target: string | FolderRecordingTarget, options: RecordOptions = {}): Promise<RecordingInfo> {
     const id = await this.resolveChatId(chat);
-    if (!this.calls.has(id)) {
-      throw new Error(`No active call in chat ${id}`);
-    }
-    if (this.recordings.has(id)) {
-      await this.stopRecording(id);
-    }
-    const sampleRate = options.sampleRate ?? 48000;
-    const channels = options.channels ?? 1;
-    const ffmpegPath = this.opts.ffmpegPath ?? 'ffmpeg';
-    await this.ntg.setStreamSources(id, StreamMode.PLAYBACK, {
-      microphone: recordingDescription(path, sampleRate, channels, ffmpegPath),
+    return this.recordingOperation(id, async () => {
+      const active = this.calls.get(id);
+      if (!active) throw new Error(`No active call in chat ${id}`);
+      if (typeof target !== 'string') {
+        const adapter = this.adapter as MTProtoAdapter & Partial<import('./group-participants.js').GroupParticipantPort>;
+        if (!adapter.getParticipants) throw new Error('This adapter does not support per-participant recording');
+        const mode = await this.ntg.getConnectionMode(this.nativeGroupId(id));
+        if (mode === ConnectionMode.RTMP) throw new Error('Per-participant recording unavailable for unified RTMP media');
+        requireMediaExecutable(this.opts.ffprobePath ?? 'ffprobe', 'ffprobe');
+        if (target.video) requireMediaExecutable(this.opts.ffmpegPath ?? 'ffmpeg', 'ffmpeg');
+        await this.stopRecordingInner(id);
+        const participants = await this.ensureParticipants(id, active.call);
+        const recorder = new FolderRecorder({
+          handle: this.nativeGroupId(id), dir: target.dir, video: target.video, registry: participants.registry,
+          native: this.ntg, sampleRate: target.sampleRate, channels: target.channels,
+          ffmpegPath: this.opts.ffmpegPath, ffprobePath: this.opts.ffprobePath,
+          connectionMode: mode === ConnectionMode.STREAM ? 'STREAM' : 'RTC',
+          lookupUnknown: (sources, signal) => participants.lookup(sources, signal),
+          subscribeFrames: (consumer) => this.nativeEvents.on('frames', (handle, frameMode, device, frames) => {
+            if (this.folderRecorders.get(id) === recorder && handle === this.nativeGroupId(id)) consumer(handle, frameMode, device, frames);
+          }),
+          onStopped: (info) => this.emit('recordingStopped', id, info),
+          onError: (error) => this.emit('recordingError', id, error),
+          onDiagnostic: (diagnostic) => this.opts.logger?.error('[tgcalls-js] folder recording:', id, diagnostic),
+        });
+        this.folderRecorders.set(id, recorder);
+        try { await recorder.start(); }
+        catch (error) { this.folderRecorders.delete(id); throw error; }
+        const info: RecordingInfo = { path: recorder.path, dir: recorder.path, mode: 'folder', video: target.video,
+          sampleRate: recorder.sampleRate, channels: recorder.channels, startedAt: recorder.startedAt };
+        this.recordings.set(id, info);
+        await this.persistGroup(id);
+        return info;
+      }
+      const sampleRate = options.sampleRate ?? 48000, channels = options.channels ?? 1;
+      const microphone = recordingDescription(target, sampleRate, channels, this.opts.ffmpegPath ?? 'ffmpeg');
+      await this.stopRecordingInner(id);
+      await this.ntg.setStreamSources(this.nativeGroupId(id), StreamMode.PLAYBACK, { microphone });
+      const info: RecordingInfo = { path: target, mode: 'mixed', sampleRate, channels, startedAt: Date.now() };
+      this.recordings.set(id, info);
+      await this.persistGroup(id);
+      return info;
     });
-    const info: RecordingInfo = { path, sampleRate, channels, startedAt: Date.now() };
-    this.recordings.set(id, info);
-    return info;
   }
 
-  /**
-   * Stop recording in this chat and finalize the output file. Returns the path
-   * that was being recorded, or null if none. ffmpeg finalizes the container
-   * after the native writer closes — allow a moment before reading the file.
-   */
+  private recordingOperation<T>(id: bigint, work: () => Promise<T>): Promise<T> {
+    const previous = this.recordingOperations.get(id) ?? Promise.resolve();
+    const result = previous.catch(() => {}).then(work);
+    this.recordingOperations.set(id, result);
+    void result.finally(() => { if (this.recordingOperations.get(id) === result) this.recordingOperations.delete(id); }).catch(() => {});
+    return result;
+  }
+
+  private async stopRecordingInner(id: bigint, reason = 'stop'): Promise<string | null> {
+    const info = this.recordings.get(id), folder = this.folderRecorders.get(id);
+    if (!info && !folder) return null;
+    try {
+      if (folder) await folder.stop(reason);
+      else await this.ntg.setStreamSources(this.nativeGroupId(id), StreamMode.PLAYBACK, {});
+    } finally {
+      this.folderRecorders.delete(id);
+      this.recordings.delete(id);
+    }
+    return info?.path ?? folder!.path;
+  }
+
+  /** Drain and finalize the active folder recorder before returning its directory. */
   async stopRecording(chat: ChatRef): Promise<string | null> {
     const id = await this.resolveChatId(chat);
-    const info = this.recordings.get(id);
-    if (!info) {return null;}
-    this.recordings.delete(id);
-    if (this.calls.has(id)) {
-      await this.ntg.setStreamSources(id, StreamMode.PLAYBACK, {});
+    return this.recordingOperation(id, async () => {
+      const target = await this.stopRecordingInner(id);
+      await this.persistGroup(id);
+      return target;
+    });
+  }
+
+  private async ensureParticipants(id: bigint, call: unknown): Promise<GroupParticipantController> {
+    const current = this.groupParticipants.get(id);
+    if (current) { await current.refresh(); return current; }
+    const adapter = this.adapter as MTProtoAdapter & Partial<import('./group-participants.js').GroupParticipantPort>;
+    if (!adapter.getParticipants) throw new Error('This adapter does not provide group participants');
+    this.installUpdateHandler();
+    const controller = new GroupParticipantController({
+      call, adapter: { getParticipants: (input, options) => adapter.getParticipants!(input, options) },
+      onError: (error) => this.opts.logger?.error('[tgcalls-js] participant refresh failed:', error),
+      onChange: (change) => {
+        for (const source of change.sourceChanges) this.emit('remoteSourceChange', id, {
+          ssrc: source.ssrc, peer: source.peer, endpoint: source.endpoint, origin: 'mtproto',
+          state: source.state === 'active' ? StreamStatus.ACTIVE : source.state === 'paused' ? StreamStatus.PAUSED : StreamStatus.IDLING,
+          device: source.device === 'microphone' ? StreamDevice.MICROPHONE : source.device === 'camera' ? StreamDevice.CAMERA : StreamDevice.SCREEN,
+        });
+      },
+    });
+    this.groupParticipants.set(id, controller);
+    try { await controller.refresh(); return controller; }
+    catch (error) { controller.close(); this.groupParticipants.delete(id); throw error; }
+  }
+
+  private async handleGroupUpdate(value: unknown): Promise<void> {
+    const update = value as any;
+    if (Array.isArray(update?.updates)) { for (const item of update.updates) await this.handleGroupUpdate(item); return; }
+    if (update?.update) { await this.handleGroupUpdate(update.update); return; }
+    const kind = String(update?.className ?? update?._ ?? '').toLowerCase();
+    if (this.conferenceController) {
+      await this.conferenceController.onServerUpdates(update);
+      if (kind === 'updategroupcallencryptedmessage') {
+        for (const handle of this.conferenceController.getHandles()) if (handle.callId === asBigInt0(update.call?.id))
+          await this.conferenceController.onEncryptedMessage(handle.nativeId, update);
+      }
     }
-    return info.path;
+    if (kind !== 'updategroupcallparticipants') return;
+    const adapter = this.adapter as MTProtoAdapter & { normalizeParticipants?: (raw: unknown[]) => ParticipantInfo[] };
+    if (!adapter.normalizeParticipants) return;
+    const participants = adapter.normalizeParticipants(update.participants ?? []);
+    if (this.conferenceController) for (const handle of this.conferenceController.getHandles()) {
+      if (handle.callId === asBigInt0(update.call?.id)) await this.conferenceController.onParticipantsUpdate(handle.nativeId, { participants, version: update.version });
+    }
+    for (const [id, controller] of this.groupParticipants) {
+      const call = this.calls.get(id)?.call as { id?: unknown } | undefined;
+      if (call && asBigInt0(call.id) === asBigInt0(update.call?.id)) controller.update(participants, update.version);
+    }
   }
 
   /** The active recording for this chat, or null. Sync (resolved aliases only). */
@@ -687,7 +1062,86 @@ export class TgCallsClient {
     return this.getRecording(chat) !== null;
   }
 
+  private conferences(): ConferenceController {
+    if (this.conferenceController) return this.conferenceController;
+    const adapter = this.adapter as MTProtoAdapter & Partial<ConferenceAdapter>;
+    const required = ['getSelfInfo', 'getConferenceInfo', 'createConference', 'joinConference', 'getChainBlocks',
+      'sendConferenceBroadcast', 'getParticipants', 'inviteConferenceParticipant', 'leaveConference'] as const;
+    for (const method of required) if (typeof adapter[method] !== 'function') throw new Error(`Conference adapter capability missing: ${method}`);
+    const native: NativeConferencePort = {
+      createP2pCall: (id) => this.ntg.createP2pCall(id),
+      initConference: (id, user, last) => this.ntg.initConference(id, user, last as unknown as Buffer),
+      applyBlocks: (id, subchain, offset, blocks, poll) => this.ntg.applyBlocks(id, subchain, offset, blocks as unknown as Buffer[], poll),
+      finishSubchainRequest: (id, subchain) => this.ntg.finishSubchainRequest(id, subchain),
+      connect: (id, params, screen) => this.ntg.connect(id, params, screen),
+      stop: (id) => this.ntg.stop(id),
+      updateAudioSsrcMappings: (id, values) => this.ntg.updateAudioSsrcMappings(id, values),
+      addIncomingVideo: (id, user, endpoint, groups) => this.ntg.addIncomingVideo(id, user, endpoint, groups),
+      removeIncomingVideo: (id, endpoint) => this.ntg.removeIncomingVideo(id, endpoint),
+      getEmojisFingerprint: (id) => this.ntg.getEmojisFingerprint(id),
+    };
+    const controller = new ConferenceController({ native, adapter: adapter as ConferenceAdapter,
+      allocateNativeId: () => this.allocateFeatureId(),
+      onError: (error) => this.emit('conferenceError', error) });
+    this.conferenceController = controller;
+    this.nativeEvents.on('outboundBlock', (id, bytes) => controller.onOutboundBlock(id, bytes));
+    this.nativeEvents.on('subchainRequest', (id, request) => controller.onSubchainRequest(id, request));
+    this.nativeEvents.on('requestParticipants', (id, request) => controller.onRequestParticipants(id, request));
+    this.nativeEvents.on('updateEmojis', (id, emojis) => controller.onUpdateEmojis(id, emojis));
+    this.installUpdateHandler();
+    return controller;
+  }
+
+  private conferenceOptions(options: ConferenceOptions & { source?: AudioSource; video?: VideoOptions }): ConferenceOptions {
+    return { ...options, muted: options.muted ?? !options.source, videoStopped: options.videoStopped ?? !options.video,
+      prepareCapture: async (id, signal) => {
+        signal.throwIfAborted();
+        const media: import('ntgcalls').MediaDescription = {};
+        if (options.source) media.microphone = audioDescription(options.source, this.opts);
+        if (options.video && options.source && options.source.kind !== 'shell') {
+          const input = options.source.kind === 'file' ? options.source.path : options.source.url;
+          const probed = await probeVideo(input, this.opts, options.video);
+          media.camera = videoDescription(options.source, { ...options.video, ...probed }, this.opts);
+        }
+        await this.ntg.setStreamSources(id, StreamMode.CAPTURE, media);
+        if (options.muted ?? !options.source) await this.ntg.mute(id);
+        else await this.ntg.unmute(id);
+        if (options.prepareCapture) await options.prepareCapture(id, signal);
+      },
+    };
+  }
+
+  /** Experimental native conference core; inspect capabilities before relying on security extras. */
+  async createConference(options: ConferenceOptions & { source?: AudioSource; video?: VideoOptions } = {}): Promise<ConferenceHandle> {
+    return this.conferences().createConference(this.conferenceOptions(options));
+  }
+  async joinConference(ref: ConferenceRef, options: ConferenceOptions & { source?: AudioSource; video?: VideoOptions } = {}): Promise<ConferenceHandle> {
+    return this.conferences().joinConference(ref, this.conferenceOptions(options));
+  }
+  getConferenceCapabilities(): ReturnType<ConferenceController['getCapabilities']> { return this.conferences().getCapabilities(); }
+  activeConferences(): ConferenceHandle[] { return this.conferenceController?.getHandles() ?? []; }
+  exportConferenceInvite(handle: ConferenceHandle): Promise<string> { return this.conferences().exportConferenceInvite(handle); }
+  inviteConferenceParticipants(handle: ConferenceHandle, users: ChatRef[], options: { video?: boolean } = {}): Promise<void> {
+    return this.conferences().inviteConferenceParticipants(handle, users, options);
+  }
+  leaveConference(handle: ConferenceHandle): Promise<void> { return this.conferences().leaveConference(handle); }
+  removeConferenceParticipants(handle: ConferenceHandle, users: ChatRef[], options: { kick?: boolean; onlyLeft?: boolean } = {}): Promise<never> {
+    return this.conferences().removeConferenceParticipants(handle, users, options);
+  }
+  sendConferenceMessage(handle: ConferenceHandle, message: unknown): Promise<never> { return this.conferences().sendConferenceMessage(handle, message); }
+  rekeyConference(handle: ConferenceHandle): Promise<never> { return this.conferences().rekeyConference(handle); }
+
   // ------------------------------------------------------------- P2P calls
+
+  /** Check the latest user/profile flags without starting or ringing a call. */
+  async getCallDenialReason(user: ChatRef, options: CallCheckOptions = {}): Promise<CallDenialReason | null> {
+    return await checkCall(this.adapter, user, options);
+  }
+
+  /** True when the latest profile flags allow this call; not a server-side guarantee. */
+  async canRequestCall(user: ChatRef, options: CallCheckOptions = {}): Promise<boolean> {
+    return await this.getCallDenialReason(user, options) === null;
+  }
 
   /**
    * Listen for incoming 1-on-1 voice calls and answer them, streaming `source`.
@@ -698,7 +1152,10 @@ export class TgCallsClient {
     if (this.callManager) {await this.callManager.stop();}
     const mgr = new P2PCallManager(this.ntg, this.adapter, {
       logger: this.opts.logger, ffmpegPath: this.opts.ffmpegPath, ffprobePath: this.opts.ffprobePath, ...options,
-    }, (peerId, state) => { void this.emit('connectionChange', peerId, state); });
+    }, (peerId, state) => { void this.emit('connectionChange', peerId, state); }, this.nativeEvents, (peerId, info) => {
+      this.emit('recordingStopped', peerId, { ...info, peer: { kind: 'user', id: peerId } });
+      if (info.status === 'failed' && info.error) {this.emit('recordingError', peerId, info.error);}
+    });
     mgr.start();
     this.callManager = mgr;
   }
@@ -713,7 +1170,7 @@ export class TgCallsClient {
    * answers. Requires `listenCalls()` first — it installs the P2P call handler
    * that drives the accept/confirm steps. Returns the Telegram call id.
    */
-  async callUser(userId: ChatRef, options: { video?: boolean | VideoOptions } = {}): Promise<bigint> {
+  async callUser(userId: ChatRef, options: OutgoingCallOptions = {}): Promise<bigint> {
     if (!this.callManager) {
       throw new Error('callUser needs an active call manager — call listenCalls({ source }) first.');
     }
@@ -737,7 +1194,7 @@ export class TgCallsClient {
     }
     // 1) native presentation join params — the returned payload goes in the
     //    JoinGroupCallPresentation request itself.
-    const params = await this.ntg.initPresentation(id);
+    const params = await this.ntg.initPresentation(this.nativeGroupId(id));
     const active = this.calls.get(id);
     const srcPath = source.kind === 'file' ? source.path : source.url;
     const probed = await probeVideo(srcPath, this.opts, video);
@@ -753,14 +1210,14 @@ export class TgCallsClient {
       && !(active.source.kind === 'shell' && active.source.command === '');
     // Camera and screen can't be mixed in ntgcalls, so the screen replaces the
     // camera. Audio is re-sent so it restarts in sync with the screen video.
-    await this.ntg.setStreamSources(id, StreamMode.CAPTURE, {
+    await this.ntg.setStreamSources(this.nativeGroupId(id), StreamMode.CAPTURE, {
       ...(hasAudio && active ? { microphone: audioDescription(active.source, this.opts) } : {}),
       screen: videoDescription(source, videoOpts, this.opts),
     });
     this.ended.delete(id);
     // 3) MTProto presentation join; connect on the presentation channel
     const connParams = await this.joinPresentationCall(this.calls.get(id)?.call, params);
-    await this.ntg.connect(id, connParams, true);
+    await this.ntg.connect(this.nativeGroupId(id), connParams, true);
     this.videoState.set(id, { device: 'screen', target: video });
     if (active) {
       active.presentationActive = true;
@@ -775,7 +1232,7 @@ export class TgCallsClient {
       throw new Error(`No active call in chat ${id}`);
     }
     try {
-      await this.ntg.stopPresentation(id);
+      await this.ntg.stopPresentation(this.nativeGroupId(id));
     } catch { /* may not be active */ }
     try {
       await this.adapter.leavePresentationCall(this.calls.get(id)?.call);
@@ -788,21 +1245,43 @@ export class TgCallsClient {
 
   // -------------------------------------------------------------- internals
 
+  private broadcastWired = false;
+  private wireBroadcast(): void {
+    if (this.broadcastWired) return;
+    this.broadcastWired = true;
+    this.nativeEvents.on('requestBroadcastPart', (nativeId, request) => {
+      for (const viewer of this.viewers.values()) if (viewer.nativeId === nativeId) return viewer.controller?.requestPart(request);
+    });
+    this.nativeEvents.on('requestBroadcastTimestamp', (nativeId) => {
+      for (const viewer of this.viewers.values()) if (viewer.nativeId === nativeId) return viewer.controller?.requestTimestamp();
+    });
+  }
+
   private wireNative(): void {
     if (this.nativeWired) {return;}
     this.nativeWired = true;
 
-    this.ntg.onStreamEnd((chatId: bigint, type: StreamType) => {
-      void this.handleStreamEnd(chatId, type);
+    this.nativeEvents.on('streamEnd', (nativeId: bigint, type: StreamType) => {
+      if (this.featureNativeIds.has(nativeId) && this.publicGroupId(nativeId) === nativeId) return;
+      return this.handleStreamEnd(this.publicGroupId(nativeId), type);
     });
 
-    this.ntg.onConnectionChange((chatId: bigint, info: { state: ConnectionState }) => {
-      void this.handleNativeConnectionChange(chatId, info);
+    this.nativeEvents.on('connectionChange', (nativeId: bigint, info: { state: ConnectionState }) => {
+      if (this.featureNativeIds.has(nativeId)) {
+        const conference = this.conferenceController?.getHandles().find((handle) => handle.nativeId === nativeId);
+        if (conference) {
+          if (info.state === ConnectionState.CLOSED || info.state === ConnectionState.FAILED)
+            return this.conferenceController!.leaveConference(conference).then(() => this.emit('connectionChange', nativeId, info.state));
+          this.emit('connectionChange', nativeId, info.state); return;
+        }
+        if (this.publicGroupId(nativeId) === nativeId) return;
+      }
+      return this.handleNativeConnectionChange(this.publicGroupId(nativeId), info);
     });
 
-    // Group/conference participants turning their camera or screen on/off.
+    // Native source events currently originate in P2P; groups use MTProto participants.
     if (typeof this.ntg.onRemoteSourceChange === 'function') {
-      this.ntg.onRemoteSourceChange((chatId: bigint, source: RemoteSourceInfo) => {
+      this.nativeEvents.on('remoteSourceChange', (chatId: bigint, source: RemoteSourceInfo) => {
         this.emit('remoteSourceChange', chatId, source);
       });
     }
@@ -905,7 +1384,7 @@ export class TgCallsClient {
   private installUpdateHandler(): void {
     if (this.updateUninstall !== null) {return;}
     this.updateUninstall = this.adapter.installUpdateHandler(
-      (u) => this.emit('update', u),
+      (u) => { this.emit('update', u); this.fireAndForget(() => this.handleGroupUpdate(u)); },
       (params) => { this.pendingConnectionParams = params; },
     );
   }
@@ -947,8 +1426,12 @@ export class TgCallsClient {
   }
 
   /** Stop active calls and remove update handlers before disposing the MTProto client. */
-  async dispose(): Promise<void> {
+  async dispose(options: { preserveState?: boolean } = {}): Promise<void> {
+    if (options.preserveState) {await this.flushState(); this.persistenceSuspended++;}
     if (this.callManager) {await this.callManager.stop(); this.callManager = null;}
+    await Promise.all([...this.publishers.values()].map((publisher) => publisher.close()));
+    this.publishers.clear();
+    await this.conferenceController?.dispose();
     await Promise.all([...this.calls.keys()].map((chatId) => this.leave(chatId)));
     await Promise.all([...this.pendingLeave.values()]);
     if (this.updateUninstall !== null) {
@@ -956,19 +1439,33 @@ export class TgCallsClient {
       this.updateUninstall = null;
     }
     this.adapter.dispose?.();
+    this.nativeEvents.dispose();
     this.calls.clear();
+    this.groupParticipants.forEach((controller) => controller.close());
+    this.groupParticipants.clear();
+    this.viewers.clear();
+    this.folderRecorders.clear();
+    this.recordings.clear();
     this.chatAliases.clear();
     this.videoState.clear();
     this.ended.clear();
+    if (options.preserveState) {this.persistenceSuspended--;}
   }
 }
 
+export * from './persistence.js';
+export * from './broadcast.js';
+export * from './conference.js';
+export * from './rtmp.js';
+export * from './participants.js';
+export * from './folder-recording.js';
 export * from './adapters/index.js';
 export * from './errors.js';
+export type { CallCheckOptions, CallDenialReason, CallEligibilityInfo } from './eligibility.js';
 export { loadTl, resetTlCache, loadEvents } from './tl.js';
 export { resolveYouTube, resolveYouTubeStreams, pcmCommand, audioDescription, videoDescription, probeVideo } from './media.js';
 export { P2PCallManager } from './calls.js';
-export type { ListenCallsOptions } from './calls.js';
+export type { ListenCallsOptions, OutgoingCallOptions, CallRecordOptions, CallRecordingStopped } from './calls.js';
 export { VideoQuality } from './types.js';
 export type {
   ActiveCall,

@@ -10,7 +10,7 @@ core by the pytgcalls team — prebuilt binaries, no compiling).
 [![Release](https://img.shields.io/github/v/release/kotakbiasa/tgcalls-js)](https://github.com/kotakbiasa/tgcalls-js/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-> **Status: v0.7.1** — audio + video + presentation + idle + playlist/queue + recording + P2P calls both directions (teleproto & mtcute).
+> **Last approved release: v0.8.0.** This branch adds unreleased call preflight, participant folder recording, RTMP/stream helpers, group restart recovery and an experimental conference core. See [roadmap status](docs/ROADMAP.md) and [new APIs](docs/roadmap-api.md) for verification limits.
 > Verified end-to-end against live Telegram voice chats (audio, video up to
 > 1080p60, and 40-minute idle presence) on Node 20+.
 
@@ -36,13 +36,14 @@ Sudah jalan vs belum: [`docs/ROADMAP.md`](docs/ROADMAP.md) (tracking: [#25](http
 
 ```bash
 # Pin a tag for stability. npm 12+ blocks git dependencies by default, hence --allow-git:
-npm install --allow-git=all github:kotakbiasa/tgcalls-js#v0.7.0
+npm install --allow-git=all github:kotakbiasa/tgcalls-js#v0.8.0
 ```
 
 Requirements:
 
 - **Node.js ≥ 18** (tested on 20 / 22).
-- **ffmpeg** on `PATH` — required for every audio/video source.
+- **ffmpeg** on `PATH` for file/URL container audio/video, mixed recording, video muxing and RTMP publication. Caller-owned raw PCM shell commands can use another producer.
+- **ffprobe** on `PATH` for video probing and folder artifact validation. Configure `ffmpegPath` / `ffprobePath` when needed; see [media support](docs/media-support.md).
 - **yt-dlp** on `PATH` — only if you use `joinYouTube()`.
 - A **user account** session (StringSession / mtcute storage). **Bots cannot join voice chats.**
 
@@ -126,6 +127,8 @@ tg.on('connectionChange', (chatId, state) => { /* numeric ConnectionState */ });
 | [Guide](docs/guide.md) | Sources, video, presentation, idle, queue, adapters, join flow |
 | [API reference](docs/api.md) | Every method, option, type, event, and error |
 | [Troubleshooting](docs/troubleshooting.md) | Native binary, ffmpeg, UDP/RTMP, YouTube, 2FA |
+| [Roadmap APIs](docs/roadmap-api.md) | Unreleased preflight, recording, RTMP, conference and restart APIs |
+| [Media support](docs/media-support.md) | Measured decoder support and ffmpeg requirement |
 
 **For AI agents / LLM tooling:** [`llms.txt`](llms.txt) (concise index) and
 [`llms-full.txt`](llms-full.txt) (full documentation in one file).

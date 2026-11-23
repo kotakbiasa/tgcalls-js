@@ -15,6 +15,13 @@ export class TgCallsError extends Error {
   }
 }
 
+/** A required media executable is absent or cannot be executed. */
+export class MediaDependencyError extends TgCallsError {
+  constructor(readonly binary: 'ffmpeg' | 'ffprobe', readonly executable: string, readonly option: 'ffmpegPath' | 'ffprobePath') {
+    super(`Required ${binary} executable "${executable}" is missing or not executable. Install ${binary} or set ${option} to its executable path.`);
+  }
+}
+
 /** join()/joinIdle() called while already in a call (or mid-join) in that chat. */
 export class AlreadyInCallError extends TgCallsError {
   readonly chatId: bigint;

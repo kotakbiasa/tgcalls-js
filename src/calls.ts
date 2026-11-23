@@ -13,12 +13,14 @@
  */
 
 import fs from 'node:fs';
+import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { NTgCalls, StreamMode, MediaSource, ConnectionState, StreamDevice } from 'ntgcalls';
 import type { MTProtoAdapter } from './adapters/types.js';
 import type { AudioSource, TgCallsOptions, VideoOptions } from './types.js';
 import { asBigInt0 } from './adapters/utils.js';
 import { audioDescription, probeVideo, recordingDescription, videoDescription } from './media.js';
+import type { NativeEventRouter } from './native-events.js';
 
 export interface ListenCallsOptions {
   /** Audio streamed into answered calls (file / url / shell). */
@@ -48,6 +50,12 @@ export interface ListenCallsOptions {
   logger?: { error(...args: unknown[]): void };
 }
 
+export interface OutgoingCallOptions {
+  video?: boolean | VideoOptions;
+  /** Overrides the listener recording default. false disables recording for this call. */
+  record?: false | string | CallRecordOptions;
+}
+
 export interface CallRecordOptions {
   /** Output file. `.mp4`/`.mkv` = video+audio; other extensions = audio only. */
   path: string;
@@ -58,19 +66,34 @@ export interface CallRecordOptions {
   video?: boolean | { width?: number; height?: number; fps?: number };
 }
 
+export interface CallRecordingStopped {
+  path: string;
+  device: 'microphone' | 'camera';
+  segment: number;
+  reason: string;
+  status: 'saved' | 'empty' | 'failed';
+  error?: Error;
+}
+
 interface P2PSession {
   callId: bigint;
   accessHash: bigint;
   peerId: bigint;
   p2pStarted: boolean;
   connInit: boolean;
+  playbackConfigured: boolean;
+  finalized: boolean;
+  closing?: Promise<void>;
   queue: Buffer[];
   startedAt: number;
+  /** Per-call recording target; outgoing calls may override the listener default. */
+  recordOptions?: NormalizedRecord | null;
   /** Active recording state for this call (video frames + finalize info). */
   record?: ActiveRecording;
 }
 
 interface ActiveRecording {
+  video: boolean;
   outPath: string;
   audioPath: string;
   rawPath: string;
@@ -79,6 +102,8 @@ interface ActiveRecording {
   height: number;
   fps: number;
   frames: number;
+  segment: number;
+  writeError?: Error;
 }
 
 type PhoneCallObj = Record<string, any>;
@@ -120,6 +145,7 @@ function buildRtcServers(connections: PhoneCallObj[] | undefined): unknown[] {
 export class P2PCallManager {
   private readonly sessions = new Map<bigint, P2PSession>(); // callId → session
   private stopHandler: (() => void) | null = null;
+  private readonly nativeSubscriptions: Array<() => void> = [];
   private readonly log: { error(...args: unknown[]): void };
   private readonly debug: boolean;
   /** Normalized `record` option (null when recording is off). */
@@ -130,6 +156,8 @@ export class P2PCallManager {
     private readonly adapter: MTProtoAdapter,
     private readonly opts: ListenCallsOptions,
     private readonly emitState?: (peerId: bigint, state: ConnectionState) => void,
+    private readonly events?: NativeEventRouter,
+    private readonly onRecordingStopped?: (peerId: bigint, info: CallRecordingStopped) => void,
   ) {
     this.log = opts.logger ?? { error: console.error.bind(console) };
     this.debug = opts.debug ?? false;
@@ -143,22 +171,46 @@ export class P2PCallManager {
       throw new Error('This MTProto adapter does not support P2P calls (need a GramJS/teleproto or mtcute client with the phone.* methods).');
     }
     // Native → Telegram signaling relay (group calls never fire this).
-    this.ntg.onSignalingData((chatId: bigint, data: Buffer) => { void this.relayOut(chatId, data); });
+    const relay = (chatId: bigint, data: Buffer): void => { void this.relayOut(chatId, data); };
+    if (this.events) {this.nativeSubscriptions.push(this.events.on('signalingData', relay));}
+    else {this.ntg.onSignalingData(relay);}
+    if (this.events) {
+      this.nativeSubscriptions.push(this.events.on('connectionChange', (chatId: bigint, info: { state: ConnectionState }) => {
+        if (info.state === ConnectionState.FAILED || info.state === ConnectionState.CLOSED) {
+          const s = this.findByPeer(chatId);
+          if (s) {
+            void this.teardownSession(s, info.state === ConnectionState.FAILED ? 'native-failed' : 'native-closed', {
+              discardRemote: true,
+              error: info.state === ConnectionState.FAILED ? new Error('Native P2P connection failed') : undefined,
+            });
+          }
+        }
+      }));
+    }
     // Remote video frames (only delivered when a PLAYBACK camera is configured).
-    if (typeof this.ntg.onFrames === 'function') {this.ntg.onFrames((chatId: bigint, mode: StreamMode, device: StreamDevice, frames: any[]) => {
+    const frames = (chatId: bigint, mode: StreamMode, device: StreamDevice, frames: any[]): void => {
       if (mode !== StreamMode.PLAYBACK || device !== StreamDevice.CAMERA) {return;}
       const s = this.findByPeer(chatId);
       const rec = s?.record;
-      if (!rec || !frames?.length) {return;}
+      if (!rec || !rec.video || !frames?.length) {return;}
       for (const f of frames) {
         if (!f?.data?.length) {continue;}
         const w = f.frameData?.width ?? 0;
         const h = f.frameData?.height ?? 0;
         if (!rec.width && w > 0 && h > 0) { rec.width = w; rec.height = h; }
         if (w !== rec.width || h !== rec.height) {continue;} // ignore resolution switches
-        try { fs.writeSync(rec.fd, f.data); rec.frames++; } catch { /* disk error → drop frame */ }
+        try {
+          fs.writeSync(rec.fd, f.data);
+          rec.frames++;
+        } catch (err) {
+          const writeErr = err instanceof Error ? err : new Error(String(err));
+          rec.writeError ??= writeErr;
+          this.log.error('[p2p] video frame write failed:', writeErr);
+        }
       }
-    });}
+    };
+    if (this.events) {this.nativeSubscriptions.push(this.events.on('frames', frames));}
+    else if (typeof this.ntg.onFrames === 'function') {this.ntg.onFrames(frames);}
     this.stopHandler = a.installCallHandler(
       (pc) => { void this.onPhoneCall(pc as PhoneCallObj); },
       (callId, data) => { void this.onSignalingIn(callId, data); },
@@ -169,13 +221,10 @@ export class P2PCallManager {
   async stop(): Promise<void> {
     this.stopHandler?.();
     this.stopHandler = null;
-    for (const s of this.sessions.values()) {
-      if (this.rec) {
-        try { await this.ntg.setStreamSources(s.peerId, StreamMode.PLAYBACK, {}); } catch { /* best-effort */ }
-      }
-      try { await this.ntg.stop(s.peerId); } catch { /* best-effort */ }
-      await this.finalizeRecording(s);
-      this.emitState?.(s.peerId, ConnectionState.CLOSED);
+    for (const unsubscribe of this.nativeSubscriptions.splice(0)) {unsubscribe();}
+    const active = [...this.sessions.values()];
+    for (const s of active) {
+      await this.teardownSession(s, 'stop', { discardRemote: true });
     }
     this.sessions.clear();
   }
@@ -183,6 +232,16 @@ export class P2PCallManager {
   /** Active P2P call peer ids. */
   activePeers(): bigint[] {
     return [...this.sessions.values()].map((s) => s.peerId);
+  }
+
+  private assertRecordingTargetAvailable(record: NormalizedRecord | null): void {
+    if (!record) {return;}
+    const target = path.resolve(record.outPath);
+    for (const session of this.sessions.values()) {
+      if (session.recordOptions && path.resolve(session.recordOptions.outPath) === target) {
+        throw new Error(`Recording target is already in use: ${target}`);
+      }
+    }
   }
 
   private findByPeer(peerId: bigint): P2PSession | undefined {
@@ -240,7 +299,11 @@ export class P2PCallManager {
       return;
     }
 
-    const session: P2PSession = { callId, accessHash, peerId, p2pStarted: false, connInit: false, queue: [], startedAt: Date.now() };
+    this.assertRecordingTargetAvailable(this.rec);
+    const session: P2PSession = {
+      callId, accessHash, peerId, p2pStarted: false, connInit: false,
+      playbackConfigured: false, finalized: false, queue: [], startedAt: Date.now(), recordOptions: this.rec,
+    };
     this.sessions.set(callId, session);
     const t0 = Date.now();
     const step = (m: string): void => { if (this.debug) { this.log.error(`[p2p] ${m} +${Date.now() - t0}ms`); } };
@@ -249,47 +312,45 @@ export class P2PCallManager {
         String(callId), String(peerId), typeof pc.id, typeof pc.accessHash, String(pc.accessHash));
     }
 
-    // createP2pCall MUST precede initExchange; the native call id is the peer id.
-    await this.ntg.createP2pCall(peerId);
-    step('createP2pCall ok');
-    const mediaOpts = { client: {} as never, ffmpegPath: this.opts.ffmpegPath, ffprobePath: this.opts.ffprobePath } as TgCallsOptions;
-    const media: Record<string, unknown> = { microphone: audioDescription(this.opts.source, mediaOpts) };
-    // setStreamSources REPLACES every device, so the camera must be included in
-    // the same description as the microphone. Telegram 1:1 calls can be video
-    // calls (PhoneCallRequested.video); the native core already registers camera
-    // tracks for P2P, only the source has to be provided here.
-    if (this.opts.video && this.opts.source.kind !== 'shell') {
-      const targetOpts = typeof this.opts.video === 'object' ? this.opts.video : {};
-      const srcPath = this.opts.source.kind === 'file' ? this.opts.source.path : this.opts.source.url;
-      const probed = await probeVideo(srcPath, mediaOpts, targetOpts);
-      media.camera = videoDescription(
-        this.opts.source,
-        { ...probed, ...targetOpts, width: probed.width, height: probed.height, fps: probed.fps },
-        mediaOpts,
-      );
-      step(`camera ${probed.width}x${probed.height}@${probed.fps} peerVideo=${String(pc.video)}`);
-    }
-    await this.ntg.setStreamSources(peerId, StreamMode.CAPTURE, media as never);
-    step('setStreamSources ok');
-
-    const dh = await this.adapter.getDhConfig!();
-    step(`getDhConfig ok g=${dh.g} p.len=${dh.p?.length} random.len=${dh.random?.length}`);
-    const gB = await this.ntg.initExchange(peerId, { g: dh.g, p: jsBytes(dh.p), random: jsBytes(dh.random) }, jsBytes(pc.gAHash));
-    step(`initExchange ok gB.len=${(gB as unknown as Buffer)?.length}`);
-    const protocol = NTgCalls.getProtocol();
     try {
+      // createP2pCall MUST precede initExchange; the native call id is the peer id.
+      await this.ntg.createP2pCall(peerId);
+      step('createP2pCall ok');
+      const mediaOpts = { client: {} as never, ffmpegPath: this.opts.ffmpegPath, ffprobePath: this.opts.ffprobePath } as TgCallsOptions;
+      const media: Record<string, unknown> = { microphone: audioDescription(this.opts.source, mediaOpts) };
+      if (this.opts.video && this.opts.source.kind !== 'shell') {
+        const targetOpts = typeof this.opts.video === 'object' ? this.opts.video : {};
+        const srcPath = this.opts.source.kind === 'file' ? this.opts.source.path : this.opts.source.url;
+        const probed = await probeVideo(srcPath, mediaOpts, targetOpts);
+        media.camera = videoDescription(
+          this.opts.source,
+          { ...probed, ...targetOpts, width: probed.width, height: probed.height, fps: probed.fps },
+          mediaOpts,
+        );
+        step(`camera ${probed.width}x${probed.height}@${probed.fps} peerVideo=${String(pc.video)}`);
+      }
+      await this.ntg.setStreamSources(peerId, StreamMode.CAPTURE, media as never);
+      step('setStreamSources ok');
+
+      const dh = await this.adapter.getDhConfig!();
+      step(`getDhConfig ok g=${dh.g} p.len=${dh.p?.length} random.len=${dh.random?.length}`);
+      const gB = await this.ntg.initExchange(peerId, { g: dh.g, p: jsBytes(dh.p), random: jsBytes(dh.random) }, jsBytes(pc.gAHash));
+      step(`initExchange ok gB.len=${(gB as unknown as Buffer)?.length}`);
+      const protocol = NTgCalls.getProtocol();
       await this.adapter.acceptCall!(callId, accessHash, gB, protocol);
       step('acceptCall ok');
     } catch (e) {
-      step(`acceptCall FAILED: ${(e as Error).message}`);
-      throw e;
+      const err = e instanceof Error ? e : new Error(String(e));
+      step(`acceptIncoming FAILED: ${err.message}`);
+      await this.teardownSession(session, 'setup-failed', { discardRemote: true, error: err });
+      throw err;
     }
   }
 
   private async connectP2p(pc: PhoneCallObj): Promise<void> {
     const callId = asBigInt0(pc.id);
     const s = this.sessions.get(callId);
-    if (!s || s.p2pStarted) {return;} // Telegram re-sends PhoneCall; connect exactly once.
+    if (!s || s.p2pStarted || s.closing) {return;} // Telegram re-sends PhoneCall; connect exactly once.
     s.p2pStarted = true;
     s.accessHash = asBigInt0(pc.accessHash);
     const t1 = Date.now();
@@ -300,9 +361,15 @@ export class P2PCallManager {
         (pc.connections ?? []).length, String(pc.p2pAllowed));
     }
 
-    await this.ntg.exchangeKeys(s.peerId, jsBytes(pc.gAOrB), asBigInt0(pc.keyFingerprint));
-    st('exchangeKeys ok');
-    await this.startTransport(s, pc, st);
+    try {
+      await this.ntg.exchangeKeys(s.peerId, jsBytes(pc.gAOrB), asBigInt0(pc.keyFingerprint));
+      st('exchangeKeys ok');
+      await this.startTransport(s, pc, st);
+    } catch (e) {
+      const err = e instanceof Error ? e : new Error(String(e));
+      await this.teardownSession(s, 'setup-failed', { discardRemote: true, error: err });
+      throw err;
+    }
   }
 
   /**
@@ -310,73 +377,84 @@ export class P2PCallManager {
    * arrives as PhoneCallAccepted → confirmCall → PhoneCall, after which the
    * shared transport path (connectP2p + media) takes over.
    */
-  async call(userId: bigint, opts: { video?: boolean | VideoOptions } = {}): Promise<bigint> {
+  async call(userId: bigint, opts: OutgoingCallOptions = {}): Promise<bigint> {
     const wantVideo = Boolean(opts.video);
+    const recordOptions = opts.record === undefined ? this.rec : normalizeRecord(opts.record);
+    this.assertRecordingTargetAvailable(recordOptions);
+    if (this.findByPeer(userId)) {throw new Error(`A P2P call with peer ${userId} is already active`);}
     if (!this.adapter.requestCall || !this.adapter.confirmCall) {
       throw new Error('This MTProto adapter cannot place outgoing calls (missing phone.requestCall / phone.confirmCall).');
     }
     const mediaOpts = { client: {} as never, ffmpegPath: this.opts.ffmpegPath, ffprobePath: this.opts.ffprobePath } as TgCallsOptions;
-    await this.ntg.createP2pCall(userId);
-    const media: Record<string, unknown> = { microphone: audioDescription(this.opts.source, mediaOpts) };
-    if (wantVideo && this.opts.source.kind !== 'shell') {
-      const targetOpts = typeof opts.video === 'object' ? opts.video : {};
-      const srcPath = this.opts.source.kind === 'file' ? this.opts.source.path : this.opts.source.url;
-      const probed = await probeVideo(srcPath, mediaOpts, targetOpts);
-      media.camera = videoDescription(this.opts.source, { ...probed, ...targetOpts, width: probed.width, height: probed.height, fps: probed.fps }, mediaOpts);
-    }
-    await this.ntg.setStreamSources(userId, StreamMode.CAPTURE, media as never);
+    let nativeCreated = false;
+    try {
+      await this.ntg.createP2pCall(userId);
+      nativeCreated = true;
+      const media: Record<string, unknown> = { microphone: audioDescription(this.opts.source, mediaOpts) };
+      if (wantVideo && this.opts.source.kind !== 'shell') {
+        const targetOpts = typeof opts.video === 'object' ? opts.video : {};
+        const srcPath = this.opts.source.kind === 'file' ? this.opts.source.path : this.opts.source.url;
+        const probed = await probeVideo(srcPath, mediaOpts, targetOpts);
+        media.camera = videoDescription(this.opts.source, { ...probed, ...targetOpts, width: probed.width, height: probed.height, fps: probed.fps }, mediaOpts);
+      }
+      await this.ntg.setStreamSources(userId, StreamMode.CAPTURE, media as never);
 
-    const dh = await this.adapter.getDhConfig!();
-    // null gaHash → native returns SHA256(g_a) instead of g_b (outgoing branch).
-    const gAHash = await this.ntg.initExchange(
-      userId, { g: dh.g, p: jsBytes(dh.p), random: jsBytes(dh.random) }, null as never,
-    ) as Buffer;
-    const protocol = NTgCalls.getProtocol();
-    const res = await this.adapter.requestCall!(userId, gAHash, protocol, wantVideo) as PhoneCallObj;
-    // teleproto wraps the RPC result: { className: 'phone.PhoneCall', phoneCall, users }.
-    const raw = (res?.phoneCall ?? res) as PhoneCallObj;
-    const callId = asBigInt0(raw?.id);
-    if (!callId) { throw new Error('phone.requestCall returned no call id'); }
-    this.sessions.set(callId, {
-      callId, accessHash: asBigInt0(raw?.accessHash), peerId: userId,
-      p2pStarted: false, connInit: false, queue: [], startedAt: Date.now(),
-    });
-    if (this.debug) { this.log.error('[p2p] outgoing callId=%s gAHash.len=%s video=%s', String(callId), String(gAHash?.length), String(wantVideo)); }
-    return callId;
+      const dh = await this.adapter.getDhConfig!();
+      // null gaHash → native returns SHA256(g_a) instead of g_b (outgoing branch).
+      const gAHash = await this.ntg.initExchange(
+        userId, { g: dh.g, p: jsBytes(dh.p), random: jsBytes(dh.random) }, null as never,
+      ) as Buffer;
+      const protocol = NTgCalls.getProtocol();
+      const res = await this.adapter.requestCall!(userId, gAHash, protocol, wantVideo) as PhoneCallObj;
+      // teleproto wraps the RPC result: { className: 'phone.PhoneCall', phoneCall, users }.
+      const raw = (res?.phoneCall ?? res) as PhoneCallObj;
+      const callId = asBigInt0(raw?.id);
+      if (!callId) { throw new Error('phone.requestCall returned no call id'); }
+      this.sessions.set(callId, {
+        callId, accessHash: asBigInt0(raw?.accessHash), peerId: userId,
+        p2pStarted: false, connInit: false, playbackConfigured: false, finalized: false,
+        queue: [], startedAt: Date.now(), recordOptions,
+      });
+      if (this.debug) { this.log.error('[p2p] outgoing callId=%s gAHash.len=%s video=%s', String(callId), String(gAHash?.length), String(wantVideo)); }
+      return callId;
+    } catch (err) {
+      if (nativeCreated) {
+        try { await this.ntg.stop(userId); } catch { /* best-effort */ }
+      }
+      throw err;
+    }
   }
 
   /** Callee accepted our outgoing call: exchange keys and confirm. */
   private async onAccepted(pc: PhoneCallObj): Promise<void> {
     const callId = asBigInt0(pc.id);
     const s = this.sessions.get(callId);
-    if (!s || s.p2pStarted) {return;}
+    if (!s || s.p2pStarted || s.closing) {return;}
+    // Claim the session before the first await: duplicate Accepted/passive
+    // confirmed updates can otherwise race the key exchange and connect twice.
+    s.p2pStarted = true;
     const t1 = Date.now();
     const st = (m: string): void => { if (this.debug) { this.log.error(`[p2p] ${m} +${Date.now() - t1}ms`); } };
-    // No fingerprint yet in the outgoing direction — the native core computes it.
-    const auth = await this.ntg.exchangeKeys(s.peerId, jsBytes(pc.gB), 0n) as { keyFingerprint: bigint; gAOrB: Buffer };
-    st(`exchangeKeys (outgoing) ok fingerprint=${String(auth.keyFingerprint)}`);
-    const confirmed = await this.adapter.confirmCall!(
-      callId, s.accessHash, Buffer.from(auth.gAOrB as unknown as Uint8Array), asBigInt0(auth.keyFingerprint), NTgCalls.getProtocol(),
-    ) as PhoneCallObj;
-    st('confirmCall ok');
-    s.p2pStarted = true;
-    // phone.confirmCall often returns a PhoneCall with an empty `connections`
-    // list (no STUN/TURN, no peer_tag) — ICE then only sees host candidates and
-    // times out. phone.getCall carries the real RTC servers once confirmed.
-    let finalCall = confirmed;
-    if (!(confirmed as { connections?: unknown[] })?.connections?.length && this.adapter.getCall) {
-      try {
-        const fetched = await this.adapter.getCall(callId, s.accessHash) as PhoneCallObj;
-        const rawFetched = (fetched as { phoneCall?: PhoneCallObj })?.phoneCall ?? fetched;
-        if (rawFetched?.connections?.length) {
-          finalCall = { ...confirmed, connections: rawFetched.connections, protocol: rawFetched.protocol ?? confirmed.protocol } as PhoneCallObj;
-        }
-        st(`getCall servers=${String(rawFetched?.connections?.length ?? 0)}`);
-      } catch (e) {
-        st(`getCall failed: ${(e as Error).message}`);
-      }
+    try {
+      // No fingerprint yet in the outgoing direction — the native core computes it.
+      const auth = await this.ntg.exchangeKeys(s.peerId, jsBytes(pc.gB), 0n) as { keyFingerprint: bigint; gAOrB: Buffer };
+      st(`exchangeKeys (outgoing) ok fingerprint=${String(auth.keyFingerprint)}`);
+      const result = await this.adapter.confirmCall!(
+        callId, s.accessHash, Buffer.from(auth.gAOrB as unknown as Uint8Array), asBigInt0(auth.keyFingerprint), NTgCalls.getProtocol(),
+      ) as PhoneCallObj;
+      // MTProto returns phone.PhoneCall { phoneCall, users }, just as requestCall
+      // does. Reading the wrapper loses the relay endpoints and the peer's
+      // direct-P2P restriction. Custom adapters may still return the inner call.
+      const confirmed = (result.phoneCall ?? result) as PhoneCallObj;
+      st('confirmCall ok');
+      s.p2pStarted = true;
+      s.accessHash = confirmed.accessHash === undefined ? s.accessHash : asBigInt0(confirmed.accessHash);
+      await this.startTransport(s, confirmed, st);
+    } catch (e) {
+      const err = e instanceof Error ? e : new Error(String(e));
+      await this.teardownSession(s, 'setup-failed', { discardRemote: true, error: err });
+      throw err;
     }
-    await this.startTransport(s, finalCall, st);
   }
 
   /** Connect the native transport and start media (shared by both directions). */
@@ -395,9 +473,12 @@ export class P2PCallManager {
     const v2 = peerVersions.filter((v) => v === '8.0.0' || v === '9.0.0');
     const versions = v2.length ? v2 : ['8.0.0'];
     if (this.debug) { this.log.error('[p2p] peerVersions=%s -> using=%s', JSON.stringify(peerVersions), JSON.stringify(versions)); }
-    // customParameters must be valid JSON: an empty string is a PRESENT optional
-    // and json::parse("") throws "incomplete JSON" inside the native core.
-    await this.ntg.connectP2p(s.peerId, servers as never, versions, pc.p2pAllowed ?? true, '{}');
+    // Pass Telegram's transport configuration through unchanged when present.
+    // An absent value still needs valid JSON at the native optional boundary.
+    const customParameters = typeof pc.customParameters?.data === 'string'
+      ? pc.customParameters.data : '{}';
+    JSON.parse(customParameters);
+    await this.ntg.connectP2p(s.peerId, servers as never, versions, pc.p2pAllowed === true, customParameters);
     st(`connectP2p ok servers=${servers.length}`);
 
     s.connInit = true;
@@ -411,7 +492,7 @@ export class P2PCallManager {
     // or the call connects but carries no audio. With `record`, the playback mic
     // becomes the recorder (native mixes remote speakers → ffmpeg); enabling a
     // PLAYBACK camera makes native deliver remote video frames to onFrames().
-    const recOpt = this.rec;
+    const recOpt = s.recordOptions;
     if (recOpt) {
       const playback: Record<string, unknown> = {
         microphone: recordingDescription(recOpt.audioPath, 48000, 1, this.opts.ffmpegPath ?? 'ffmpeg'),
@@ -419,17 +500,23 @@ export class P2PCallManager {
       if (recOpt.video) {
         const rawPath = `${recOpt.outPath}.video.i420`;
         s.record = {
-          outPath: recOpt.outPath, audioPath: recOpt.audioPath, rawPath,
+          video: true, outPath: recOpt.outPath, audioPath: recOpt.audioPath, rawPath,
           fd: fs.openSync(rawPath, 'w'),
-          width: recOpt.width ?? 0, height: recOpt.height ?? 0, fps: recOpt.fps, frames: 0,
+          width: recOpt.width ?? 0, height: recOpt.height ?? 0, fps: recOpt.fps, frames: 0, segment: 1,
         };
         playback.camera = {
           mediaSource: MediaSource.EXTERNAL,
           width: recOpt.width ?? 0, height: recOpt.height ?? 0, fps: recOpt.fps,
           input: '', keepOpen: false,
         };
+      } else {
+        s.record = {
+          video: false, outPath: recOpt.outPath, audioPath: recOpt.audioPath, rawPath: '',
+          fd: -1, width: 0, height: 0, fps: 0, frames: 0, segment: 1,
+        };
       }
       await this.ntg.setStreamSources(s.peerId, StreamMode.PLAYBACK, playback as never);
+      s.playbackConfigured = true;
       this.log.error('[p2p] recording -> %s (%s)', recOpt.outPath, recOpt.video ? 'video+audio' : 'audio only');
     } else {
       await this.ntg.setStreamSources(s.peerId, StreamMode.PLAYBACK, {
@@ -444,34 +531,121 @@ export class P2PCallManager {
     const callId = asBigInt0(pc.id);
     const s = this.sessions.get(callId);
     if (!s) {return;}
-    this.sessions.delete(callId);
-    // Close the recorder writer first so ffmpeg finalizes the container.
-    if (this.rec) {
-      try { await this.ntg.setStreamSources(s.peerId, StreamMode.PLAYBACK, {}); } catch { /* best-effort */ }
-    }
-    try { await this.ntg.stop(s.peerId); } catch { /* best-effort */ }
-    await this.finalizeRecording(s);
-    // ntg.stop() does not emit a CLOSED transition, so tell consumers explicitly.
-    this.emitState?.(s.peerId, ConnectionState.CLOSED);
-    const duration = Math.floor((Date.now() - s.startedAt) / 1000);
-    try { await this.adapter.discardCall!(callId, s.accessHash, duration, pc.reason, 0n); }
-    catch { /* peer already gone */ }
+    await this.teardownSession(s, 'discarded', { discardRemote: true, discardReason: pc.reason });
+  }
+
+  private teardownSession(
+    s: P2PSession,
+    reason: string,
+    opts: { discardRemote: boolean; discardReason?: unknown; error?: Error },
+  ): Promise<void> {
+    if (s.closing) {return s.closing;}
+    this.sessions.delete(s.callId);
+    s.closing = (async () => {
+      // Close the recorder writer first so ffmpeg finalizes the container.
+      if (s.recordOptions) {
+        try { await this.ntg.setStreamSources(s.peerId, StreamMode.PLAYBACK, {}); } catch { /* best-effort */ }
+      }
+      try { await this.ntg.stop(s.peerId); } catch { /* best-effort */ }
+      await this.finalizeRecording(s, reason, opts.error);
+      if (opts.discardRemote) {
+        const duration = Math.max(0, Math.floor((Date.now() - s.startedAt) / 1000));
+        try {
+          await this.adapter.discardCall!(s.callId, s.accessHash, duration, opts.discardReason, 0n);
+        } catch (error) {
+          if (reason === 'stop') {
+            this.log.error('[tgcalls-js] remote hangup failed:', error);
+          }
+        }
+      }
+      // ntg.stop() does not emit a CLOSED transition, so tell consumers explicitly.
+      this.emitState?.(s.peerId, ConnectionState.CLOSED);
+    })();
+    return s.closing;
   }
 
   /**
    * Close the raw video sink and mux it with the recorded audio. Runs after the
    * playback writer is closed so the wav container is final.
    */
-  private async finalizeRecording(s: P2PSession): Promise<void> {
+  private async finalizeRecording(s: P2PSession, reason = 'stop', causeError?: Error): Promise<void> {
+    if (s.finalized) {return;}
+    s.finalized = true;
     const rec = s.record;
-    if (!rec) {return;}
     s.record = undefined;
-    try { fs.closeSync(rec.fd); } catch { /* already closed */ }
+    if (!rec) {
+      if (s.recordOptions && causeError) {
+        this.onRecordingStopped?.(s.peerId, {
+          path: s.recordOptions.outPath,
+          device: s.recordOptions.video ? 'camera' : 'microphone',
+          segment: 1,
+          reason,
+          status: 'failed',
+          error: causeError,
+        });
+      }
+      return;
+    }
+    if (rec.fd >= 0) {
+      try { fs.closeSync(rec.fd); } catch { /* already closed */ }
+    }
+    if (!rec.video) {
+      const failErr = rec.writeError ?? causeError;
+      if (failErr) {
+        this.onRecordingStopped?.(s.peerId, {
+          path: rec.outPath,
+          device: 'microphone',
+          segment: rec.segment,
+          reason,
+          status: 'failed',
+          error: failErr,
+        });
+        return;
+      }
+      let hasData = false;
+      try {
+        hasData = fs.existsSync(rec.outPath) && fs.statSync(rec.outPath).size > 0;
+      } catch {
+        hasData = false;
+      }
+      this.onRecordingStopped?.(s.peerId, {
+        path: rec.outPath,
+        device: 'microphone',
+        segment: rec.segment,
+        reason,
+        status: hasData ? 'saved' : 'empty',
+      });
+      return;
+    }
+
+    const failErr = rec.writeError ?? causeError;
+    if (failErr) {
+      // Retain raw/audio recovery files on disk when a disk/setup error occurs.
+      this.log.error('[p2p] recording failed:', failErr);
+      this.onRecordingStopped?.(s.peerId, {
+        path: rec.outPath,
+        device: 'camera',
+        segment: rec.segment,
+        reason,
+        status: 'failed',
+        error: failErr,
+      });
+      return;
+    }
+
     if (!rec.width || !rec.height || !rec.frames) {
       fs.rmSync(rec.rawPath, { force: true });
       this.log.error('[p2p] recording dropped: no video frames received');
+      this.onRecordingStopped?.(s.peerId, {
+        path: rec.outPath,
+        device: 'camera',
+        segment: rec.segment,
+        reason,
+        status: 'empty',
+      });
       return;
     }
+
     try {
       await runProcess(this.opts.ffmpegPath ?? 'ffmpeg', [
         '-y', '-f', 'rawvideo', '-pix_fmt', 'yuv420p', '-s', `${rec.width}x${rec.height}`, '-r', String(rec.fps || 25),
@@ -479,12 +653,39 @@ export class P2PCallManager {
         '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p',
         '-c:a', 'aac', '-b:a', '96k', '-shortest', rec.outPath,
       ]);
-      this.log.error('[p2p] recording saved -> %s (%dx%d, %d frames)', rec.outPath, rec.width, rec.height, rec.frames);
-    } catch (e) {
-      this.log.error('[p2p] recording mux failed:', e);
-    } finally {
+      const st = fs.statSync(rec.outPath);
+      if (st.size <= 0) {
+        throw new Error('Muxed recording file is empty');
+      }
       fs.rmSync(rec.rawPath, { force: true });
-      if (rec.audioPath !== rec.outPath) {fs.rmSync(rec.audioPath, { force: true });}
+      if (rec.audioPath !== rec.outPath) {
+        fs.rmSync(rec.audioPath, { force: true });
+      }
+      this.log.error('[p2p] recording saved -> %s (%dx%d, %d frames)', rec.outPath, rec.width, rec.height, rec.frames);
+      this.onRecordingStopped?.(s.peerId, {
+        path: rec.outPath,
+        device: 'camera',
+        segment: rec.segment,
+        reason,
+        status: 'saved',
+      });
+    } catch (e) {
+      const err = e instanceof Error ? e : new Error(String(e));
+      // Retain raw/audio recovery files on mux failure!
+      try {
+        if (fs.existsSync(rec.outPath) && fs.statSync(rec.outPath).size === 0) {
+          fs.rmSync(rec.outPath, { force: true });
+        }
+      } catch { /* ignore */ }
+      this.log.error('[p2p] recording mux failed:', err);
+      this.onRecordingStopped?.(s.peerId, {
+        path: rec.outPath,
+        device: 'camera',
+        segment: rec.segment,
+        reason,
+        status: 'failed',
+        error: err,
+      });
     }
   }
 }
@@ -502,17 +703,24 @@ interface NormalizedRecord {
 }
 
 /** Accept the string shorthand (audio only) and the object form (audio+video). */
-function normalizeRecord(r: string | CallRecordOptions | undefined): NormalizedRecord | null {
+function normalizeRecord(r: false | string | CallRecordOptions | undefined): NormalizedRecord | null {
   if (!r) {return null;}
-  const path = typeof r === 'string' ? r : r.path;
-  const ext = path.slice(path.lastIndexOf('.')).toLowerCase();
-  const videoExt = ext === '.mp4' || ext === '.mkv' || ext === '.webm';
+  const outPath = (typeof r === 'string' ? r : r.path).trim();
+  if (!outPath) {
+    throw new Error('Recording path must be a non-empty string');
+  }
+  const dot = outPath.lastIndexOf('.');
+  const ext = dot >= 0 ? outPath.slice(dot).toLowerCase() : '';
+  if (ext === '.webm') {
+    throw new Error('Unsupported recording container ".webm" for H.264/AAC recording; use ".mp4" or ".mkv"');
+  }
+  const videoExt = ext === '.mp4' || ext === '.mkv';
   const wanted = typeof r === 'string' ? videoExt : (r.video ?? videoExt);
   const opts = typeof r === 'object' && typeof r.video === 'object' ? r.video : {};
   return {
     video: wanted !== false,
-    outPath: path,
-    audioPath: wanted !== false ? `${path}.audio.wav` : path,
+    outPath,
+    audioPath: wanted !== false ? `${outPath}.audio.wav` : outPath,
     width: opts.width,
     height: opts.height,
     fps: opts.fps ?? 25,

@@ -1,15 +1,69 @@
 import type { ChatRef, JoinOptions } from '../types.js';
-import type { MtcuteLike, MTProtoAdapter } from './types.js';
-import { asBigInt0, findConnectionParams, sleep } from './utils.js';
+import type { GroupCallInfo, MtcuteLike, MTProtoAdapter } from './types.js';
+import type { CallEligibilityInfo } from '../eligibility.js';
+import type { BroadcastChunkRequest, BroadcastChunkResult } from '../broadcast.js';
+import type { ConferenceInfo, ConferenceJoin, ConferenceRef, ConferenceResult } from '../conference.js';
+import type { ParticipantPage } from '../group-participants.js';
+import type { ParticipantInfo } from '../participants.js';
+import {
+  asBigInt0,
+  extractGroupCallFromUpdates,
+  findConnectionParams,
+  isUnauthorizedError,
+  normalizeParticipantList,
+  sleep,
+} from './utils.js';
 
 export class MtcuteAdapter implements MTProtoAdapter {
   readonly isAdapter = true as const;
   private readonly client: MtcuteLike;
   private updateCb: ((update: unknown) => void) | null = null;
   private updateUnsubscribe: (() => void) | null = null;
+  private readonly participantMinCache = new Map<string, ParticipantInfo>();
 
   constructor(client: MtcuteLike) {
     this.client = client;
+  }
+
+  private toInputGroupCall(call: unknown): Record<string, unknown> {
+    if (!call || typeof call !== 'object') {
+      throw new Error('Invalid group call reference');
+    }
+    const c = call as Record<string, any>;
+    if (c._ === 'inputGroupCall' || c._ === 'inputGroupCallSlug' || c._ === 'inputGroupCallInviteMessage') {
+      return c;
+    }
+    if (c.slug !== undefined) {
+      return { _: 'inputGroupCallSlug', slug: String(c.slug) };
+    }
+    if (c.inviteMessageId !== undefined || c.msgId !== undefined) {
+      return { _: 'inputGroupCallInviteMessage', msgId: Number(c.inviteMessageId ?? c.msgId) };
+    }
+    if (c.id !== undefined && c.accessHash !== undefined) {
+      return {
+        _: 'inputGroupCall',
+        id: MtcuteAdapter.longOf(c.id),
+        accessHash: MtcuteAdapter.longOf(c.accessHash),
+      };
+    }
+    return c;
+  }
+
+  private async callWithSignal(
+    request: unknown,
+    signal?: AbortSignal,
+    dcId?: number,
+    fastNoRetry = false,
+  ): Promise<unknown> {
+    signal?.throwIfAborted();
+    if (dcId !== undefined || fastNoRetry || signal !== undefined) {
+      return await this.client.call(request, {
+        ...(dcId !== undefined ? { dcId } : {}),
+        ...(signal ? { abortSignal: signal } : {}),
+        ...(fastNoRetry ? { floodSleepThreshold: 0, maxRetryCount: 0 } : {}),
+      });
+    }
+    return await this.client.call(request);
   }
 
   async resolveChatId(chat: ChatRef): Promise<bigint> {
@@ -270,6 +324,382 @@ export class MtcuteAdapter implements MTProtoAdapter {
   dispose(): void {
     this.removeUpdateHandler();
     this.removeCallHandler();
+    this.participantMinCache.clear();
+  }
+
+  // --- Group metadata, participants, broadcast stream, and conference (#18/#20/#21) ---
+
+  async getSelfInfo(): Promise<{ userId: bigint; isBot: boolean; authorized: boolean }> {
+    if (typeof this.client.getMe !== 'function') {
+      return { userId: 0n, isBot: false, authorized: false };
+    }
+    try {
+      const me = (await this.client.getMe()) as Record<string, any> | undefined;
+      const userId = me?.id !== undefined ? asBigInt0(me.id) : 0n;
+      if (!me || userId <= 0n) {
+        return { userId: 0n, isBot: false, authorized: false };
+      }
+      return {
+        userId,
+        isBot: Boolean(me.isBot ?? me.bot),
+        authorized: true,
+      };
+    } catch (err) {
+      if (isUnauthorizedError(err)) {
+        return { userId: 0n, isBot: false, authorized: false };
+      }
+      throw err;
+    }
+  }
+
+  async getGroupCallInfo(call: unknown, signal?: AbortSignal): Promise<GroupCallInfo> {
+    const inputCall = this.toInputGroupCall(call);
+    const res = (await this.callWithSignal(
+      { _: 'phone.getGroupCall', call: inputCall, limit: 0 },
+      signal,
+    )) as Record<string, any>;
+    const gc = (res?.call ?? res) as Record<string, any>;
+    if (!gc || gc._ === 'groupCallDiscarded' || gc.className === 'GroupCallDiscarded') {
+      throw new Error('Group call is discarded or missing');
+    }
+    const id = asBigInt0(gc.id);
+    const accessHash = asBigInt0(gc.accessHash);
+    if (id === 0n) {
+      throw new Error('phone.getGroupCall returned no call id');
+    }
+    // Preserve mtcute's Long object instances so subsequent TL calls keep their low/high representation.
+    const canonicalCall = {
+      _: 'inputGroupCall',
+      id: MtcuteAdapter.longOf(gc.id),
+      accessHash: MtcuteAdapter.longOf(gc.accessHash),
+    };
+    if (Array.isArray(res?.participants) && res.participants.length > 0) {
+      this.normalizeParticipants(res.participants);
+    }
+    return {
+      call: canonicalCall,
+      id,
+      accessHash,
+      conference: Boolean(gc.conference),
+      rtmpStream: Boolean(gc.rtmpStream),
+      ...(gc.streamDcId !== undefined && gc.streamDcId !== null ? { streamDcId: Number(gc.streamDcId) } : {}),
+      version: Number(gc.version ?? 0),
+      ...(typeof gc.inviteLink === 'string' && gc.inviteLink ? { inviteLink: gc.inviteLink } : {}),
+    };
+  }
+
+  normalizeParticipants(raw: unknown[]): ParticipantInfo[] {
+    return normalizeParticipantList(raw, this.participantMinCache);
+  }
+
+  async getParticipants(
+    call: unknown,
+    options: { ids: bigint[]; sources: number[]; offset: string; limit: number; signal?: AbortSignal },
+  ): Promise<ParticipantPage> {
+    const ids: unknown[] = [];
+    for (const id of options.ids) {
+      let peer: unknown;
+      if (typeof this.client.resolvePeer === 'function') {
+        const ref = id <= BigInt(Number.MAX_SAFE_INTEGER) && id >= BigInt(Number.MIN_SAFE_INTEGER)
+          ? Number(id)
+          : id.toString();
+        try {
+          peer = await this.client.resolvePeer(ref);
+        } catch {
+          /* fallback below */
+        }
+      }
+      if (!peer) {
+        peer = {
+          _: 'inputPeerUser',
+          userId: Number(id < 0n ? -id : id),
+          accessHash: MtcuteAdapter.longOf(0n),
+        };
+      }
+      ids.push(peer);
+    }
+    const sources = options.sources.map((s) => s | 0);
+    const res = (await this.callWithSignal(
+      {
+        _: 'phone.getGroupParticipants',
+        call: this.toInputGroupCall(call),
+        ids,
+        sources,
+        offset: options.offset,
+        limit: options.limit,
+      },
+      options.signal,
+    )) as Record<string, any>;
+    const participants = this.normalizeParticipants(res?.participants ?? []);
+    return {
+      participants,
+      version: Number(res?.version ?? 0),
+      nextOffset: String(res?.nextOffset ?? ''),
+      count: Number(res?.count ?? participants.length),
+    };
+  }
+
+  async getStreamRtmpUrl(
+    chatId: bigint,
+    options: { revoke?: boolean; liveStory?: boolean; signal?: AbortSignal } = {},
+  ): Promise<{ url: string; key: string }> {
+    let peer: unknown = chatId;
+    if (typeof this.client.resolvePeer === 'function') {
+      try {
+        peer = await this.client.resolvePeer(chatId);
+      } catch {
+        try {
+          peer = await this.client.resolvePeer(Number(chatId));
+        } catch {
+          peer = chatId;
+        }
+      }
+    }
+    const res = (await this.callWithSignal(
+      {
+        _: 'phone.getGroupCallStreamRtmpUrl',
+        peer,
+        revoke: options.revoke === true,
+        ...(options.liveStory ? { liveStory: true } : {}),
+      },
+      options.signal,
+    )) as { url?: string; key?: string };
+    if (typeof res?.url !== 'string' || typeof res?.key !== 'string') {
+      throw new Error('phone.getGroupCallStreamRtmpUrl returned an invalid endpoint');
+    }
+    return { url: res.url, key: res.key };
+  }
+
+  async getStreamChannels(
+    call: unknown,
+    dcId: number,
+    signal: AbortSignal,
+  ): Promise<Array<{ channel: number; lastTimestampMs: bigint }>> {
+    if (!Number.isInteger(dcId) || dcId <= 0) {
+      throw new Error('A positive integer media dcId is required');
+    }
+    const res = (await this.callWithSignal(
+      { _: 'phone.getGroupCallStreamChannels', call: this.toInputGroupCall(call) },
+      signal,
+      dcId,
+      true,
+    )) as { channels?: Array<Record<string, any>> };
+    const list = Array.isArray(res?.channels) ? res.channels : [];
+    return list.map((ch) => ({
+      channel: Number(ch.channel),
+      lastTimestampMs: asBigInt0(ch.lastTimestampMs ?? ch.last_timestamp_ms),
+    }));
+  }
+
+  async downloadStreamChunk(
+    call: unknown,
+    request: BroadcastChunkRequest,
+    dcId: number,
+    signal: AbortSignal,
+  ): Promise<BroadcastChunkResult> {
+    if (!Number.isInteger(dcId) || dcId <= 0) {
+      throw new Error('A positive integer media dcId is required');
+    }
+    const hasVideoChannel = request.videoChannel !== undefined;
+    const hasVideoQuality = request.videoQuality !== undefined;
+    if (hasVideoChannel !== hasVideoQuality) {
+      throw new Error('Broadcast stream videoChannel and videoQuality must be provided together');
+    }
+    const location = {
+      _: 'inputGroupCallStream',
+      call: this.toInputGroupCall(call),
+      timeMs: MtcuteAdapter.longOf(request.timeMs),
+      scale: request.scale ?? 0,
+      ...(hasVideoChannel ? { videoChannel: request.videoChannel, videoQuality: request.videoQuality } : {}),
+    };
+    const res = (await this.callWithSignal(
+      {
+        _: 'upload.getFile',
+        precise: true,
+        cdnSupported: false,
+        location,
+        offset: MtcuteAdapter.longOf(request.offset),
+        limit: request.limit,
+      },
+      signal,
+      dcId,
+      true,
+    )) as Record<string, any>;
+    if (
+      res?._ === 'upload.fileCdnRedirect' ||
+      res?.className === 'upload.FileCdnRedirect' ||
+      res?.fileToken !== undefined
+    ) {
+      return { redirect: res };
+    }
+    const bytes = res?.bytes instanceof Uint8Array ? Uint8Array.from(res.bytes) : new Uint8Array();
+    return { bytes };
+  }
+
+  async getConferenceInfo(ref: ConferenceRef, signal?: AbortSignal): Promise<ConferenceInfo> {
+    let inputCall: Record<string, unknown>;
+    if ('slug' in ref) {
+      inputCall = { _: 'inputGroupCallSlug', slug: ref.slug };
+    } else if ('inviteMessageId' in ref) {
+      inputCall = { _: 'inputGroupCallInviteMessage', msgId: ref.inviteMessageId };
+    } else {
+      inputCall = {
+        _: 'inputGroupCall',
+        id: MtcuteAdapter.longOf((ref as any).id),
+        accessHash: MtcuteAdapter.longOf((ref as any).accessHash),
+      };
+    }
+    const info = await this.getGroupCallInfo(inputCall, signal);
+    return {
+      call: info.call,
+      id: info.id,
+      accessHash: info.accessHash,
+      conference: info.conference,
+      ...(info.inviteLink ? { inviteLink: info.inviteLink } : {}),
+    };
+  }
+
+  private extractConferenceResult(updates: unknown, fallbackCall?: Record<string, any>): ConferenceResult {
+    const rawCall = extractGroupCallFromUpdates(updates) ?? fallbackCall;
+    const rawId = rawCall?.id ?? fallbackCall?.id;
+    const rawAccessHash = rawCall?.accessHash ?? fallbackCall?.accessHash;
+    const id = asBigInt0(rawId);
+    const accessHash = asBigInt0(rawAccessHash);
+    if (id === 0n) {
+      throw new Error('Conference RPC response did not include a valid group call');
+    }
+    const call = {
+      _: 'inputGroupCall',
+      id: MtcuteAdapter.longOf(rawId),
+      accessHash: MtcuteAdapter.longOf(rawAccessHash),
+    };
+    const connectionParams = this.extractConnectionParams(updates) ?? '';
+    return {
+      info: {
+        call,
+        id,
+        accessHash,
+        conference: rawCall?.conference !== undefined ? Boolean(rawCall.conference) : true,
+        ...(typeof rawCall?.inviteLink === 'string' && rawCall.inviteLink ? { inviteLink: rawCall.inviteLink } : {}),
+      },
+      connectionParams,
+      updates,
+    };
+  }
+
+  async createConference(
+    join: ConferenceJoin,
+    options: { join: true; randomId: number; muted: boolean; videoStopped: boolean; signal?: AbortSignal },
+  ): Promise<ConferenceResult> {
+    if (!(join.publicKey instanceof Uint8Array) || join.publicKey.length !== 32) {
+      throw new Error('Conference public key must be exactly 32 bytes');
+    }
+    const updates = await this.callWithSignal(
+      {
+        _: 'phone.createConferenceCall',
+        join: options.join,
+        randomId: options.randomId,
+        muted: options.muted,
+        videoStopped: options.videoStopped,
+        publicKey: new Uint8Array(join.publicKey.buffer, join.publicKey.byteOffset, join.publicKey.byteLength),
+        block: Buffer.from(join.block),
+        params: { _: 'dataJSON', data: join.payload },
+      },
+      options.signal,
+    );
+    return this.extractConferenceResult(updates);
+  }
+
+  async joinConference(
+    call: unknown,
+    join: ConferenceJoin,
+    options: { muted: boolean; videoStopped: boolean; signal?: AbortSignal },
+  ): Promise<ConferenceResult> {
+    if (!(join.publicKey instanceof Uint8Array) || join.publicKey.length !== 32) {
+      throw new Error('Conference public key must be exactly 32 bytes');
+    }
+    const inputCall = this.toInputGroupCall(call);
+    const updates = await this.callWithSignal(
+      {
+        _: 'phone.joinGroupCall',
+        call: inputCall,
+        joinAs: { _: 'inputPeerSelf' },
+        muted: options.muted,
+        videoStopped: options.videoStopped,
+        publicKey: new Uint8Array(join.publicKey.buffer, join.publicKey.byteOffset, join.publicKey.byteLength),
+        block: Buffer.from(join.block),
+        params: { _: 'dataJSON', data: join.payload },
+      },
+      options.signal,
+    );
+    return this.extractConferenceResult(updates, inputCall);
+  }
+
+  async getChainBlocks(
+    call: unknown,
+    subchain: number,
+    offset: number,
+    limit: number,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    return await this.callWithSignal(
+      {
+        _: 'phone.getGroupCallChainBlocks',
+        call: this.toInputGroupCall(call),
+        subChainId: subchain,
+        offset,
+        limit,
+      },
+      signal,
+    );
+  }
+
+  async sendConferenceBroadcast(call: unknown, block: Buffer, signal?: AbortSignal): Promise<unknown> {
+    return await this.callWithSignal(
+      {
+        _: 'phone.sendConferenceCallBroadcast',
+        call: this.toInputGroupCall(call),
+        block: Buffer.from(block),
+      },
+      signal,
+    );
+  }
+
+  private async toInputUser(user: unknown): Promise<Record<string, unknown>> {
+    if (user && typeof user === 'object') {
+      const u = user as Record<string, any>;
+      if (u._ === 'inputUser') {return u;}
+      if (u._ === 'inputPeerUser' || u.userId !== undefined) {
+        return {
+          _: 'inputUser',
+          userId: Number(asBigInt0(u.userId)),
+          accessHash: MtcuteAdapter.longOf(u.accessHash),
+        };
+      }
+    }
+    const userId = await this.resolveUserId(user as ChatRef);
+    return await this.inputUser(userId);
+  }
+
+  async inviteConferenceParticipant(
+    call: unknown,
+    user: unknown,
+    options: { video: boolean; signal?: AbortSignal },
+  ): Promise<unknown> {
+    const userId = await this.toInputUser(user);
+    return await this.callWithSignal(
+      {
+        _: 'phone.inviteConferenceCallParticipant',
+        call: this.toInputGroupCall(call),
+        userId,
+        ...(options.video ? { video: true } : {}),
+      },
+      options.signal,
+    );
+  }
+
+  async leaveConference(call: unknown, source: number): Promise<void> {
+    await this.leaveGroupCall(this.toInputGroupCall(call), source | 0);
   }
 
   // --- P2P (1-on-1) calls ------------------------------------------------
@@ -306,6 +736,24 @@ export class MtcuteAdapter implements MTProtoAdapter {
       if (id !== undefined) {return asBigInt0(id);}
     }
     throw new Error(`Cannot resolve user "${user}" — pass a numeric user id or a cached username.`);
+  }
+
+  async getCallEligibility(userId: bigint): Promise<CallEligibilityInfo> {
+    const me = await this.client.getMe?.() as Record<string, any> | undefined;
+    const result = await this.client.call({
+      _: 'users.getFullUser', id: await this.inputUser(userId),
+    }) as { fullUser: Record<string, any>; users: Array<Record<string, any>> };
+    const full = result.fullUser;
+    const user = result.users.find((u) => asBigInt0(u.id) === userId);
+    if (!full || !user) {throw new Error('users.getFullUser returned no matching user');}
+    return {
+      userId, selfId: me?.id === undefined ? undefined : asBigInt0(me.id),
+      selfBot: Boolean(me?.bot ?? me?.isBot), bot: Boolean(user.bot),
+      deleted: Boolean(user.deleted), blocked: Boolean(full.blocked),
+      phoneCallsAvailable: Boolean(full.phoneCallsAvailable),
+      phoneCallsPrivate: Boolean(full.phoneCallsPrivate),
+      videoCallsAvailable: Boolean(full.videoCallsAvailable),
+    };
   }
 
   async getDhConfig(): Promise<{ g: number; p: Buffer; random: Buffer }> {
@@ -372,13 +820,6 @@ export class MtcuteAdapter implements MTProtoAdapter {
       gA,
       keyFingerprint: MtcuteAdapter.longOf(keyFingerprint),
       protocol: MtcuteAdapter.phoneProtocol(protocol),
-    });
-  }
-
-  async getCall(callId: bigint, accessHash: bigint): Promise<unknown> {
-    return await this.client.call({
-      _: 'phone.getCall',
-      peer: MtcuteAdapter.inputPhoneCall(callId, accessHash),
     });
   }
 

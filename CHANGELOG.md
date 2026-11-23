@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Add call preflight without ringing, explicit outgoing record options and wrapped confirm-response handling.
+- Add participant folder recording, attributed MTProto source transitions, RTMP publisher and stream viewer controllers.
+- Add opt-in atomic group state and explicit fresh restart recovery.
+- Add an experimental native conference core. Removal/rekey, encrypted application messages and crypto-health remain unavailable on ntgcalls 3.0.7.
+- Document measured native decoder limits and ffmpeg/ffprobe requirements; reject missing executables with `MediaDependencyError`.
+- Run every offline test entrypoint in an isolated process; include new public exports in dist smoke checks.
+- Live acceptance and native security blockers are tracked in `docs/ROADMAP.md`. These changes have no new version/tag/release.
+
 ## 0.8.0 (2026-11-20)
 
 - Feat: **P2P calls on mtcute** — the adapter now implements accept/request/

@@ -2,6 +2,8 @@
 
 All exports come from the package root (`import … from 'tgcalls-js'`).
 
+New APIs on the unreleased roadmap branch are documented in [Roadmap APIs](roadmap-api.md). They are not included in the `v0.8.0` tag.
+
 ## `TgCallsClient`
 
 ### Constructor
@@ -113,9 +115,7 @@ the container is inferred from the extension (`.wav`, `.mp3`, `.opus`, …).
 `RecordOptions`: `sampleRate` (default 48000), `channels` (default 1 mono).
 
 Requires an active call. One recording per chat; calling `startRecording` again
-replaces it. `stopRecording` closes the native writer, which SIGTERMs ffmpeg so the
-container finalizes cleanly — allow a moment before reading the file. Leaving the
-call also stops any recording.
+replaces it. For a string target, `stopRecording` closes the native mixed-audio writer; this legacy path does not attest encoder success. Folder recording uses owned writers and validation before reporting `saved`. Leaving the call also stops recording; see [folder recording](roadmap-api.md#participant-folder-recording).
 
 #### P2P calls (incoming)
 
@@ -150,7 +150,7 @@ again replaces it. `stopListeningCalls` hangs up active calls.
 #### Outgoing calls
 
 ```ts
-callUser(userId: ChatRef, options?: { video?: boolean | VideoOptions }): Promise<bigint>
+callUser(userId: ChatRef, options?: OutgoingCallOptions): Promise<bigint>
 ```
 
 Calls `userId` and streams the same `source` into the call once the callee answers.
@@ -169,13 +169,13 @@ calls `exchangeKeys(gB, 0)` (the native core computes the fingerprint) and then
 `phone.confirmCall(gA, keyFingerprint)`. `phone.requestCall` returns
 `USER_PRIVACY_RESTRICTED` when the callee only accepts calls from contacts.
 
-Multi-party conference is not yet supported.
+An experimental native conference core is available on this branch. Full security conformance, removal/rekey and encrypted in-call messages remain blocked on native 3.0.7; see [Roadmap APIs](roadmap-api.md#experimental-conference-core).
 
 #### Lifecycle
 
 ```ts
 leave(chat: ChatRef): Promise<void>   // ntgcalls.stop + phone.leaveGroupCall (best-effort)
-dispose(): Promise<void>              // stop all calls + detach update handlers; await before disposing the MTProto client
+dispose(options?: { preserveState?: boolean }): Promise<void> // stop owned calls/publishers; preserve desired state for planned restart
 ```
 
 #### Introspection
@@ -185,7 +185,7 @@ activeCalls(): bigint[]                       // marked ids of all active calls
 getCall(chat: ChatRef): ActiveCall | null     // sync; numeric id or previously-resolved alias
 isActive(chat: ChatRef): boolean              // sync; same alias rules
 resolveChatId(chat: ChatRef): Promise<bigint> // username / t.me link / id → marked id
-getEmojiFingerprint(chat: ChatRef): Promise<string | null>  // 4 emojis, null when not in that call
+getEmojiFingerprint(chat: ChatRef | ConferenceHandle): Promise<string | null>  // 4 emojis, null when not in that call
 getConnectionMode(chat: ChatRef): Promise<string | null>    // NONE | RTC | STREAM | RTMP
 ```
 
@@ -207,10 +207,7 @@ and `once` return an unsubscribe function; `off` removes a specific handler.
 is logged (via `logger`) and never blocks the other handlers or crashes the process.
 Registering any `streamEnd` handler suppresses auto-leave.
 
-`remoteSourceChange(chatId, { ssrc, state, device })` fires when a remote
-participant turns their camera / screen on or off (the equivalent of
-MadelineProto's `onStreams`) — use it to start a new recording when the camera
-comes on.
+`remoteSourceChange(chatId, { ssrc, state, device, peer?, endpoint?, origin? })` reports native P2P source notifications and attributed MTProto participant transitions for active group registries. Group discovery uses MTProto updates because the inspected native binary does not emit group participant discovery. Removed sources map to `StreamStatus.IDLING`. Folder recording manages segment creation automatically.
 
 ## Types
 

@@ -141,13 +141,6 @@ Session note: a GramJS/teleproto string session can be reused with mtcute via
 
 ## Outgoing call: ICE `TIMEOUT` (state 8) right after the peer answers
 
-`phone.confirmCall` can return a `PhoneCall` whose `connections` list is empty —
-no STUN/TURN server, no peer tag. ICE then has host candidates only and fails its
-short receiving timeout (2.5 s) if the callee's answer is still in flight. The
-library retries through `phone.getCall` when the list is empty.
+`phone.confirmCall` returns a wrapper `{phoneCall, users}`. Reading `connections` from the wrapper instead of `phoneCall` loses the server list and peer permission flags. The roadmap branch unwraps this response and passes the inner endpoints, protocol and custom JSON to native. Direct P2P is allowed only when `p2pAllowed === true`.
 
-- teleproto/GramJS: `phone.getCall` exists, servers are recovered.
-- **mtcute 0.32**: its TL schema has `phone.getCallConfig` but not `phone.getCall`,
-  so the retry logs `getCall failed: Unknown object phone.getCall` and the call
-  still runs with `servers=0`. It works when the peer answers quickly (host/IPv6
-  candidates suffice) and times out when it does not — retry the call on `state 8`.
+`phone.getCall` is absent from both installed client schemas and the official MTProto schema. It is not a fallback for this shape error. There is no established evidence that slow answering caused the missing endpoints. If a current call still fails, inspect the confirmed inner call and fresh native/signaling logs rather than adding a nonexistent RPC.

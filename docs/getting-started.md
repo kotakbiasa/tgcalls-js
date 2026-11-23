@@ -5,7 +5,8 @@
 | Need | Why |
 |---|---|
 | Node.js ≥ 18 | runtime (tested on 20 / 22) |
-| `ffmpeg` on PATH | decodes every audio/video source to PCM/rawvideo |
+| `ffmpeg` on PATH | file/URL container decode, mixed recording, muxing and RTMP encoding |
+| `ffprobe` on PATH | video metadata and folder recording validation |
 | `yt-dlp` on PATH | only for `joinYouTube()` / `resolveYouTube()` |
 | A **user** account session | Telegram does not allow bots to join voice chats |
 | `api_id` / `api_hash` | from <https://my.telegram.org> |
@@ -20,7 +21,7 @@ brew install ffmpeg yt-dlp         # macOS
 ## Install the package
 
 ```bash
-npm install --allow-git=all github:kotakbiasa/tgcalls-js#v0.7.0
+npm install --allow-git=all github:kotakbiasa/tgcalls-js#v0.8.0
 ```
 
 npm 12+ blocks git dependencies by default (`EALLOWGIT`); `--allow-git=all`
