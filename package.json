@@ -26,9 +26,6 @@
     "typecheck:all": "tsc -p tsconfig.all.json",
     "test": "node test/all.mjs",
     "smoke": "node smoke.mjs",
-    "docs:dev": "vitepress dev docs",
-    "docs:build": "vitepress build docs",
-    "docs:preview": "vitepress preview docs",
     "prepare": "npm run build",
     "prepublishOnly": "npm run build && npm run typecheck:all && npm run smoke"
   },
@@ -39,7 +36,7 @@
   "bugs": {
     "url": "https://github.com/kotakbiasa/tgcalls-js/issues"
   },
-  "homepage": "https://github.com/kotakbiasa/tgcalls-js#readme",
+  "homepage": "https://tgcalls-js.gitbook.io/docs/",
   "keywords": [
     "telegram",
     "userbot",
@@ -71,7 +68,6 @@
     "@types/node": "^26.6.6",
     "teleproto": "^1.233.0",
     "tsx": "^4.23.15",
-    "typescript": "^7.0.2",
-    "vitepress": "^1.6.4"
+    "typescript": "^7.0.2"
   }
 }
