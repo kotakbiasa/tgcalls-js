@@ -66,6 +66,10 @@ export interface GeminiLiveOptions {
   geminiOutputSampleRate?: number;
   /** Forward incoming Telegram video frames to Gemini Live at most every N ms (0/undefined disables video forwarding). */
   videoFrameIntervalMs?: number;
+  /** Enable real-time transcription of incoming Telegram user speech (`onInputTranscription`). */
+  enableInputTranscription?: boolean;
+  /** Enable real-time transcription of Gemini's spoken audio (`onOutputTranscription`). */
+  enableOutputTranscription?: boolean;
   /** Pacing interval in ms for 10ms outbound audio frames (default 10; set 0 in unit tests). */
   paceIntervalMs?: number;
   /** Custom WebSocket endpoint URL (defaults to Google Generative Language v1beta BidiGenerateContent). */
@@ -75,6 +79,7 @@ export interface GeminiLiveOptions {
   onSetupComplete?: () => void;
   onAudioOutput?: (pcm24k: Buffer) => void;
   onTextOutput?: (text: string) => void;
+  onThoughtOutput?: (thought: string) => void;
   onInputTranscription?: (text: string) => void;
   onOutputTranscription?: (text: string) => void;
   onInterrupted?: () => void;
@@ -82,7 +87,7 @@ export interface GeminiLiveOptions {
   onError?: (error: Error) => void;
 }
 
-const DEFAULT_MODEL = 'models/gemini-2.5-flash-native-audio-preview-12-2025';
+const DEFAULT_MODEL = 'models/gemini-2.5-flash-native-audio-latest';
 const DEFAULT_BASE_URL =
   'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
 
@@ -281,6 +286,12 @@ export class GeminiLiveSession {
         parts: [{ text: this.options.systemInstruction }],
       };
     }
+    if (this.options.enableInputTranscription) {
+      setup.inputAudioTranscription = {};
+    }
+    if (this.options.enableOutputTranscription) {
+      setup.outputAudioTranscription = {};
+    }
     return { setup };
   }
 
@@ -326,7 +337,11 @@ export class GeminiLiveSession {
     if (Array.isArray(parts)) {
       for (const part of parts) {
         if (typeof part?.text === 'string' && part.text.length > 0) {
-          this.options.onTextOutput?.(part.text);
+          if (part.thought === true) {
+            this.options.onThoughtOutput?.(part.text);
+          } else {
+            this.options.onTextOutput?.(part.text);
+          }
         }
         const inline = part?.inlineData;
         if (inline && typeof inline.data === 'string' && inline.data.length > 0) {

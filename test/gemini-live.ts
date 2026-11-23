@@ -172,7 +172,7 @@ import {
     });
 
     assert.equal(session.isReady, true);
-    assert.equal(wsSent[0].setup.model, 'models/gemini-2.5-flash-native-audio-preview-12-2025');
+    assert.equal(wsSent[0].setup.model, 'models/gemini-2.5-flash-native-audio-latest');
     assert.equal(wsSent[0].setup.generationConfig.speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName, 'Aoede');
 
     // 1) Simulate incoming 48kHz Telegram voice frame -> Gemini receives 16kHz PCM (320 bytes)
