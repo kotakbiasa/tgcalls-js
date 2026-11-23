@@ -57,6 +57,13 @@ export interface MTProtoAdapter {
     participant: ChatRef | 'self',
     options: EditParticipantOptions,
   ): Promise<unknown>;
+  editGroupCallTitle?(call: unknown, title: string): Promise<unknown>;
+  discardGroupCall?(call: unknown): Promise<unknown>;
+  exportGroupCallInvite?(call: unknown, options?: { canSelfUnmute?: boolean }): Promise<string>;
+  toggleGroupCallRecord?(
+    call: unknown,
+    options: { start: boolean; title?: string; video?: boolean; videoPortrait?: boolean },
+  ): Promise<unknown>;
   getStreamRtmpUrl?(
     chatId: bigint,
     options?: { revoke?: boolean; liveStory?: boolean; signal?: AbortSignal },

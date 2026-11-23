@@ -8,7 +8,35 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { MediaDependencyError } from './errors.js';
 import { MediaSource } from 'ntgcalls';
-import type { AudioSource, PlaybackFilterOptions, TgCallsOptions, VideoOptions } from './types.js';
+import type { AudioFilterPreset, AudioSource, PlaybackFilterOptions, TgCallsOptions, VideoOptions } from './types.js';
+
+export const AUDIO_FILTER_PRESETS: Record<Exclude<AudioFilterPreset, 'off' | { custom: string }>, string> = {
+  bassboost: 'equalizer=f=60:width_type=h:width=50:g=10',
+  nightcore: 'asetrate=48000*1.25,aresample=48000',
+  vaporwave: 'asetrate=48000*0.8,aresample=48000',
+  '8d': 'apulsator=hz=0.125',
+  karaoke: 'stereotools=mlev=0.03',
+  treble: 'equalizer=f=3000:width_type=h:width=1000:g=8',
+  normalizer: 'dynaudnorm=f=150:g=15',
+  echo: 'aecho=0.8:0.88:60:0.4',
+};
+
+/** Resolve an AudioFilterPreset into an ffmpeg `-af` filter string (or null when off). */
+export function resolveAudioFilterExpression(filter?: AudioFilterPreset): string | null {
+  if (!filter || filter === 'off') {return null;}
+  if (typeof filter === 'object') {
+    const expr = filter.custom?.trim();
+    if (!expr || /[\0\r\n]/.test(expr)) {
+      throw new Error('Custom audio filter must be a non-empty single-line ffmpeg filter expression');
+    }
+    return expr;
+  }
+  const preset = AUDIO_FILTER_PRESETS[filter];
+  if (!preset) {
+    throw new Error(`Unknown audio filter preset "${String(filter)}"`);
+  }
+  return preset;
+}
 
 /** Check PATH without spawning after WebRTC has started native worker threads. */
 export function requireMediaExecutable(executable: string, binary: 'ffmpeg' | 'ffprobe'): string {
@@ -50,7 +78,11 @@ export function pcmCommand(source: AudioSource, opts: TgCallsOptions, playback?:
   if (playback?.speed !== undefined && playback.speed !== 1) {
     filters.push(`atempo=${formatTrimmed(playback.speed, 4)}`);
   }
-  const filterFlag = filters.length > 0 ? `-af ${filters.join(',')} ` : '';
+  const presetExpr = resolveAudioFilterExpression(playback?.filter);
+  if (presetExpr) {
+    filters.push(presetExpr);
+  }
+  const filterFlag = filters.length > 0 ? `-af ${shellQuote(filters.join(','))} ` : '';
   switch (source.kind) {
     case 'file':
       return `${ffmpeg} -vn ${seekPrefix}-i ${shellQuote(source.path)} -loglevel panic ${filterFlag}-f s16le -ac 2 -ar 48000 pipe:1`;

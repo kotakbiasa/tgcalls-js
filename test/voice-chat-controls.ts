@@ -38,6 +38,18 @@ const { Api } = require('teleproto');
   assert.equal(sent.at(-1).participant.className, 'InputPeerUser');
   assert.equal(sent.at(-1).muted, true);
   assert.equal(sent.at(-1).volume, 15000);
+
+  await adapter.editGroupCallTitle(inputCall, 'Now Playing: Track 1');
+  assert.equal(sent.at(-1).className, 'phone.EditGroupCallTitle');
+  assert.equal(sent.at(-1).title, 'Now Playing: Track 1');
+
+  await adapter.toggleGroupCallRecord(inputCall, { start: true, title: 'Rec 1', video: true, videoPortrait: false });
+  assert.equal(sent.at(-1).className, 'phone.ToggleGroupCallRecord');
+  assert.equal(sent.at(-1).start, true);
+  assert.equal(sent.at(-1).video, true);
+
+  await adapter.discardGroupCall(inputCall);
+  assert.equal(sent.at(-1).className, 'phone.DiscardGroupCall');
 }
 
 // 2. MtcuteAdapter: joinAs channel + editGroupCallParticipant
@@ -67,6 +79,17 @@ const { Api } = require('teleproto');
   await mt.editGroupCallParticipant(inputCall, 42n, { muted: false, volume: 8000 });
   assert.equal(sent.at(-1).participant._, 'inputPeerUser');
   assert.equal(sent.at(-1).volume, 8000);
+
+  await mt.editGroupCallTitle(inputCall, 'Lo-Fi Radio');
+  assert.equal(sent.at(-1)._, 'phone.editGroupCallTitle');
+  assert.equal(sent.at(-1).title, 'Lo-Fi Radio');
+
+  await mt.toggleGroupCallRecord(inputCall, { start: true, title: 'Session' });
+  assert.equal(sent.at(-1)._, 'phone.toggleGroupCallRecord');
+  assert.equal(sent.at(-1).start, true);
+
+  await mt.discardGroupCall(inputCall);
+  assert.equal(sent.at(-1)._, 'phone.discardGroupCall');
 }
 
 // 3. TgCallsClient facade: getParticipants, setRaiseHand, muteParticipant, setParticipantVolume

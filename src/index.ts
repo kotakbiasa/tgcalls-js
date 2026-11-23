@@ -16,6 +16,7 @@
 import { NTgCalls, ConnectionState, ConnectionMode, MediaSource, StreamMode, StreamType, StreamDevice, StreamStatus } from 'ntgcalls';
 import type {
   ActiveCall,
+  AudioFilterPreset,
   AudioSource,
   ChatRef,
   EditParticipantOptions,
@@ -23,6 +24,7 @@ import type {
   JoinResult,
   LoopMode,
   MTProtoAdapter,
+  NativeRecordingOptions,
   PlaybackControls,
   PlaybackFilterOptions,
   RecordOptions,
@@ -36,7 +38,17 @@ import type {
 } from './types.js';
 import { createAdapter, extractSsrc, sleep } from './adapters/index.js';
 import { AlreadyInCallError, NoVoiceChatError } from './errors.js';
-import { audioDescription, videoDescription, recordingDescription, requireMediaExecutable, resolveYouTube, resolveYouTubeStreams, probeVideo } from './media.js';
+import {
+  AUDIO_FILTER_PRESETS,
+  audioDescription,
+  videoDescription,
+  recordingDescription,
+  requireMediaExecutable,
+  resolveAudioFilterExpression,
+  resolveYouTube,
+  resolveYouTubeStreams,
+  probeVideo,
+} from './media.js';
 import { P2PCallManager, type ListenCallsOptions, type OutgoingCallOptions } from './calls.js';
 import { getCallDenialReason as checkCall, type CallCheckOptions, type CallDenialReason } from './eligibility.js';
 import { NativeEventRouter } from './native-events.js';
@@ -59,14 +71,22 @@ import { type ParticipantInfo } from './participants.js';
 import { asBigInt0 } from './adapters/utils.js';
 import { StateStore, ResumeController, type SavedGroup, type ResumeOptions, type ResumeReport, type PersistenceError } from './persistence.js';
 import {
+  PacedAudioQueue,
   normalizeIncomingAudioFrames,
+  normalizeIncomingVideoFrames,
   pushExternalAudioFrame,
   pushExternalVideoFrame,
   type ExternalAudioFrame,
   type ExternalAudioSinkOptions,
+  type ExternalVideoFrame,
+  type ExternalVideoSinkOptions,
+  type InterruptAudioResult,
   type PushAudioOptions,
   type PushVideoOptions,
+  type VoiceActivityEvent,
+  type VoiceActivityOptions,
 } from './external-frames.js';
+import { GeminiLiveSession, type GeminiLiveOptions } from './gemini-live.js';
 
 export interface TgCallsEvents {
   /** Fired when the native audio stream ends (e.g. file finished). */
@@ -137,6 +157,8 @@ export class TgCallsClient {
    */
   private readonly playlists = new Map<bigint, { queue: AudioSource[]; hold: AudioSource | null }>();
   private readonly playbackControls = new Map<bigint, PlaybackControls>();
+  private readonly pacedAudioQueues = new Map<bigint, PacedAudioQueue>();
+  private readonly idleTimers = new Map<bigint, ReturnType<typeof setTimeout>>();
   /** Per-chat active recording (incoming audio mixed by ntgcalls → ffmpeg). */
   private readonly recordings = new Map<bigint, RecordingInfo>();
   private static nextFeatureId = -8_000_000_000_000_000_000n;
@@ -356,7 +378,9 @@ export class TgCallsClient {
   ): Promise<JoinResult> {
     // Media sources set before the MTProto join so media flows immediately.
     const controls = this.playbackControls.get(chatId);
-    const playback = controls ? { volume: controls.volume, speed: controls.speed } : undefined;
+    const playback = controls
+      ? { volume: controls.volume, speed: controls.speed, filter: controls.filter }
+      : undefined;
     const media: Record<string, unknown> = {
       microphone: audioDescription(source, this.opts, playback),
     };
@@ -433,6 +457,7 @@ export class TgCallsClient {
       joinedAt: Date.now(),
     });
     this.groupJoinOptions.set(chatId, { ...options });
+    this.clearIdleTimer(chatId);
     this.wireNative();
     await this.persistGroup(chatId);
     return { chatId, call: inputCall, ssrc };
@@ -524,6 +549,7 @@ export class TgCallsClient {
         joinedAt: Date.now(),
       });
       this.groupJoinOptions.set(chatId, { ...options });
+      this.scheduleIdleTimer(chatId);
       this.wireNative();
       await this.persistGroup(chatId);
       return { chatId, call: inputCall, ssrc };
@@ -688,6 +714,9 @@ export class TgCallsClient {
 
     const active = this.calls.get(id);
     const viewer = this.viewers.get(id);
+    this.clearIdleTimer(id);
+    this.pacedAudioQueues.get(viewer?.nativeId ?? id)?.interrupt();
+    this.pacedAudioQueues.delete(viewer?.nativeId ?? id);
     this.calls.delete(id);
     this.videoState.delete(id);
     this.ended.delete(id);
@@ -813,6 +842,7 @@ export class TgCallsClient {
       ? {
           volume: playback?.volume ?? controls?.volume ?? 100,
           speed: playback?.speed ?? controls?.speed ?? 1,
+          filter: playback?.filter ?? controls?.filter ?? 'off',
           ...(playback?.startSec !== undefined ? { startSec: playback.startSec } : {}),
         }
       : undefined;
@@ -835,13 +865,18 @@ export class TgCallsClient {
     await this.ntg.setStreamSources(this.nativeGroupId(id), StreamMode.CAPTURE, media);
     const active = this.calls.get(id);
     if (active) {active.source = source;}
+    if (this.isIdleSource(source)) {
+      this.scheduleIdleTimer(id);
+    } else {
+      this.clearIdleTimer(id);
+    }
     await this.persistGroup(id);
   }
 
   private ensurePlaybackControls(id: bigint): PlaybackControls {
     let controls = this.playbackControls.get(id);
     if (!controls) {
-      controls = { volume: 100, speed: 1, loop: 'off' };
+      controls = { volume: 100, speed: 1, loop: 'off', filter: 'off' };
       this.playbackControls.set(id, controls);
     }
     return controls;
@@ -913,11 +948,34 @@ export class TgCallsClient {
     return id === undefined ? 'off' : (this.playbackControls.get(id)?.loop ?? 'off');
   }
 
-  /** Current volume/speed/loop settings for this chat (sync; resolved aliases only). */
+  /** Current volume/speed/loop/filter settings for this chat (sync; resolved aliases only). */
   getPlaybackControls(chat: ChatRef): PlaybackControls {
     const id = this.cachedChatId(chat);
     const controls = id === undefined ? undefined : this.playbackControls.get(id);
-    return controls ? { ...controls } : { volume: 100, speed: 1, loop: 'off' };
+    return controls ? { ...controls } : { volume: 100, speed: 1, loop: 'off', filter: 'off' };
+  }
+
+  /**
+   * Apply a real-time ffmpeg audio filter preset (`'bassboost'`, `'nightcore'`,
+   * `'vaporwave'`, `'8d'`, `'karaoke'`, `'treble'`, `'normalizer'`, `'echo'`, `'off'`)
+   * or custom `{ custom: string }` filter expression. Reapplies immediately at the
+   * current playback position for active file/url sources.
+   */
+  async setAudioFilter(chat: ChatRef, filter: AudioFilterPreset): Promise<void> {
+    resolveAudioFilterExpression(filter); // validates preset or custom expression
+    const id = await this.resolveChatId(chat);
+    this.ensurePlaybackControls(id).filter = filter;
+    const active = this.calls.get(id);
+    if (active && (active.source.kind === 'file' || active.source.kind === 'url')) {
+      const pos = await this.time(id).catch(() => 0);
+      await this.setSource(id, active.source, pos > 0 ? { startSec: pos } : undefined);
+    }
+  }
+
+  /** Current audio filter preset for this chat (sync; resolved aliases only). */
+  getAudioFilter(chat: ChatRef): AudioFilterPreset {
+    const id = this.cachedChatId(chat);
+    return id === undefined ? 'off' : (this.playbackControls.get(id)?.filter ?? 'off');
   }
 
   // ------------------------------------------------ group participant controls
@@ -962,6 +1020,64 @@ export class TgCallsClient {
       throw new Error('Participant volume must be a finite number between 0 and 200');
     }
     await this.editParticipant(chat, participant, { volume: Math.round(percent * 100) });
+  }
+
+  private async resolveGroupCallRef(chat: ChatRef): Promise<{ id: bigint; call: unknown }> {
+    const id = await this.resolveChatId(chat);
+    const active = this.calls.get(id);
+    if (active?.call) {
+      return { id, call: active.call };
+    }
+    const call = await this.adapter.getGroupCall(id, false);
+    return { id, call };
+  }
+
+  /** Change the group voice chat title (e.g. `"Now Playing: ..."`). Requires admin rights. */
+  async setCallTitle(chat: ChatRef, title: string): Promise<void> {
+    if (typeof title !== 'string' || /[\0\r\n]/.test(title)) {
+      throw new Error('Call title must be a single-line string');
+    }
+    if (!this.adapter.editGroupCallTitle) {
+      throw new Error('This adapter does not support phone.editGroupCallTitle');
+    }
+    const { call } = await this.resolveGroupCallRef(chat);
+    await this.adapter.editGroupCallTitle(call, title);
+  }
+
+  /**
+   * End/discard the entire group voice chat for all participants (`phone.discardGroupCall`,
+   * requires admin rights) and clean up any local call session for that chat.
+   */
+  async endGroupCall(chat: ChatRef): Promise<void> {
+    if (!this.adapter.discardGroupCall) {
+      throw new Error('This adapter does not support phone.discardGroupCall');
+    }
+    const { id, call } = await this.resolveGroupCallRef(chat);
+    await this.adapter.discardGroupCall(call);
+    if (this.calls.has(id) || this.viewers.has(id) || this.publishers.has(id)) {
+      await this.leave(id).catch(() => {});
+    }
+  }
+
+  /** Export a shareable invite link (`https://t.me/...?videochat=...`) for the group voice chat. */
+  async exportCallInvite(chat: ChatRef, options: { canSelfUnmute?: boolean } = {}): Promise<string> {
+    if (!this.adapter.exportGroupCallInvite) {
+      throw new Error('This adapter does not support phone.exportGroupCallInvite');
+    }
+    const { call } = await this.resolveGroupCallRef(chat);
+    return await this.adapter.exportGroupCallInvite(call, options);
+  }
+
+  /** Start or stop Telegram's native server-side voice chat recording (`phone.toggleGroupCallRecord`). */
+  async toggleNativeRecording(chat: ChatRef, enabled: boolean, options: NativeRecordingOptions = {}): Promise<void> {
+    if (!this.adapter.toggleGroupCallRecord) {
+      throw new Error('This adapter does not support phone.toggleGroupCallRecord');
+    }
+    const { call } = await this.resolveGroupCallRef(chat);
+    await this.adapter.toggleGroupCallRecord(call, {
+      start: Boolean(enabled),
+      ...options,
+    });
   }
 
   // ------------------------------------------------------------- playlist
@@ -1025,7 +1141,105 @@ export class TgCallsClient {
       await this.setSource(id, next);
     } else {
       await this.ntg.pause(this.nativeGroupId(id));
+      this.scheduleIdleTimer(id);
     }
+  }
+
+  /**
+   * Insert a track at the front of the queue (to play immediately after the
+   * current track). If no call is active, joins and starts playing immediately;
+   * if the call is idle, starts playing immediately.
+   */
+  async playNext(chat: ChatRef, source: AudioSource): Promise<void> {
+    const id = await this.resolveChatId(chat);
+    const pl = this.ensurePlaylist(id);
+    const active = this.calls.get(id);
+    if (!active) {
+      await this.join(id, source, { autoLeave: false });
+      return;
+    }
+    if (this.isIdleSource(active.source)) {
+      await this.setSource(id, source);
+      return;
+    }
+    pl.queue.unshift(source);
+    await this.persistGroup(id);
+  }
+
+  /** Remove and return the queued track at zero-based `index` (or `null` if out of range). */
+  async removeQueueTrack(chat: ChatRef, index: number): Promise<AudioSource | null> {
+    const id = await this.resolveChatId(chat);
+    const pl = this.playlists.get(id);
+    if (!pl || !Number.isInteger(index) || index < 0 || index >= pl.queue.length) {
+      return null;
+    }
+    const [removed] = pl.queue.splice(index, 1);
+    await this.persistGroup(id);
+    return removed ?? null;
+  }
+
+  /** Move a queued track from `fromIndex` to `toIndex`. Returns `true` if moved. */
+  async moveQueueTrack(chat: ChatRef, fromIndex: number, toIndex: number): Promise<boolean> {
+    const id = await this.resolveChatId(chat);
+    const pl = this.playlists.get(id);
+    if (
+      !pl ||
+      !Number.isInteger(fromIndex) ||
+      !Number.isInteger(toIndex) ||
+      fromIndex < 0 ||
+      fromIndex >= pl.queue.length ||
+      toIndex < 0 ||
+      toIndex >= pl.queue.length
+    ) {
+      return false;
+    }
+    if (fromIndex === toIndex) {return true;}
+    const [item] = pl.queue.splice(fromIndex, 1);
+    if (!item) {return false;}
+    pl.queue.splice(toIndex, 0, item);
+    await this.persistGroup(id);
+    return true;
+  }
+
+  /** Randomly shuffle the pending queue in place (Fisher-Yates) and return a copy. */
+  async shuffleQueue(chat: ChatRef): Promise<AudioSource[]> {
+    const id = await this.resolveChatId(chat);
+    const pl = this.playlists.get(id);
+    if (!pl || pl.queue.length <= 1) {
+      return [...(pl?.queue ?? [])];
+    }
+    for (let i = pl.queue.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const tmp = pl.queue[i]!;
+      pl.queue[i] = pl.queue[j]!;
+      pl.queue[j] = tmp;
+    }
+    await this.persistGroup(id);
+    return [...pl.queue];
+  }
+
+  private clearIdleTimer(id: bigint): void {
+    const t = this.idleTimers.get(id);
+    if (t !== undefined) {
+      clearTimeout(t);
+      this.idleTimers.delete(id);
+    }
+  }
+
+  private scheduleIdleTimer(id: bigint): void {
+    this.clearIdleTimer(id);
+    const timeoutMs = this.groupJoinOptions.get(id)?.idleTimeoutMs ?? this.opts.idleTimeoutMs;
+    if (!timeoutMs || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      this.idleTimers.delete(id);
+      const pl = this.playlists.get(id);
+      if (this.calls.has(id) && (!pl || (pl.queue.length === 0 && pl.hold === null))) {
+        this.leave(id).catch(() => {});
+      }
+    }, timeoutMs);
+    this.idleTimers.set(id, timer);
   }
 
   /** Set a track looped while the queue is empty (hold music). Pass null to clear. */
@@ -1379,10 +1593,21 @@ export class TgCallsClient {
     return { publicId: id, nativeId: this.nativeGroupId(id) };
   }
 
+  private getOrCreatePacedQueue(nativeId: bigint): PacedAudioQueue {
+    let q = this.pacedAudioQueues.get(nativeId);
+    if (!q) {
+      q = new PacedAudioQueue(this.ntg, nativeId);
+      this.pacedAudioQueues.set(nativeId, q);
+    }
+    return q;
+  }
+
   /**
    * Push signed 16-bit little-endian PCM bytes into an active EXTERNAL capture
    * stream (group call, P2P call, or conference). Automatically chunks larger
-   * buffers into 10ms WebRTC frames unless `chunk10ms: false` is passed.
+   * buffers into 10ms WebRTC frames unless `chunk10ms: false` is passed, and
+   * resamples when `inputSampleRate` / `inputChannels` differs from the call's
+   * capture format. Pass `paced: true` to queue frames for barge-in via `interruptAudio()`.
    */
   async pushAudioFrame(
     chat: ChatRef | ConferenceHandle,
@@ -1390,7 +1615,18 @@ export class TgCallsClient {
     options: PushAudioOptions = {},
   ): Promise<void> {
     const { nativeId } = await this.resolveExternalTarget(chat);
-    await pushExternalAudioFrame(this.ntg, nativeId, pcm, options);
+    const queue = options.paced ? this.getOrCreatePacedQueue(nativeId) : undefined;
+    await pushExternalAudioFrame(this.ntg, nativeId, pcm, options, queue);
+  }
+
+  /**
+   * Immediately drop any queued, unplayed outbound audio frames for `chat`
+   * (barge-in interruption when a user starts speaking while Voice AI is talking).
+   */
+  async interruptAudio(chat: ChatRef | ConferenceHandle): Promise<InterruptAudioResult> {
+    const { nativeId } = await this.resolveExternalTarget(chat);
+    const queue = this.pacedAudioQueues.get(nativeId);
+    return queue ? queue.interrupt() : { droppedFrames: 0, droppedBytes: 0 };
   }
 
   /**
@@ -1410,6 +1646,7 @@ export class TgCallsClient {
    * Subscribe to incoming decoded PCM audio frames for a group call, P2P call,
    * or conference. For active group calls without an active recording, ensures
    * PLAYBACK microphone is configured as `MediaSource.EXTERNAL` automatically.
+   * Supports automatic resampling via `targetSampleRate` / `targetChannels`.
    * Returns an unsubscribe function.
    */
   async onAudioFrame(
@@ -1420,10 +1657,12 @@ export class TgCallsClient {
     const { publicId, nativeId } = await this.resolveExternalTarget(chat);
     const sampleRate = options.sampleRate ?? 48000;
     const channels = options.channels ?? 1;
-    if (!Number.isInteger(sampleRate) || sampleRate <= 0) {
+    const targetSampleRate = options.targetSampleRate ?? sampleRate;
+    const targetChannels = options.targetChannels ?? channels;
+    if (!Number.isInteger(sampleRate) || sampleRate <= 0 || !Number.isInteger(targetSampleRate) || targetSampleRate <= 0) {
       throw new Error('sampleRate must be a positive integer');
     }
-    if (channels !== 1 && channels !== 2) {
+    if ((channels !== 1 && channels !== 2) || (targetChannels !== 1 && targetChannels !== 2)) {
       throw new Error('channels must be 1 or 2');
     }
     // Configure EXTERNAL playback microphone on active group calls if no recorder owns PLAYBACK.
@@ -1443,11 +1682,132 @@ export class TgCallsClient {
         return;
       }
       const registry = this.groupParticipants.get(publicId)?.registry;
-      const items = normalizeIncomingAudioFrames(frames, (ssrc) => registry?.lookup(ssrc, 'microphone')?.peer);
+      const items = normalizeIncomingAudioFrames(
+        frames,
+        (ssrc) => registry?.lookup(ssrc, 'microphone')?.peer,
+        { sampleRate, channels, targetSampleRate, targetChannels },
+      );
       for (const item of items) {
         this.fireAndForget(() => handler(item));
       }
     });
+  }
+
+  /**
+   * Subscribe to per-SSRC Voice Activity Detection (`speechStart` / `speechEnd`)
+   * computed from incoming PCM audio frames. Pass `autoInterrupt: true` to
+   * automatically trigger `interruptAudio(chat)` (barge-in) on `speechStart`.
+   */
+  async onVoiceActivity(
+    chat: ChatRef | ConferenceHandle,
+    handler: (event: VoiceActivityEvent) => void | Promise<void>,
+    options: VoiceActivityOptions = {},
+  ): Promise<() => void> {
+    const threshold = options.thresholdRms ?? 0.015;
+    const minSpeech = options.speechFrames ?? 3;
+    const minSilence = options.silenceFrames ?? 15;
+    const states = new Map<number, { speaking: boolean; speechCount: number; silenceCount: number }>();
+
+    return await this.onAudioFrame(
+      chat,
+      (frame) => {
+        let st = states.get(frame.ssrc);
+        if (!st) {
+          st = { speaking: false, speechCount: 0, silenceCount: 0 };
+          states.set(frame.ssrc, st);
+        }
+        if (frame.rms >= threshold) {
+          st.speechCount++;
+          st.silenceCount = 0;
+          if (!st.speaking && st.speechCount >= minSpeech) {
+            st.speaking = true;
+            if (options.autoInterrupt) {
+              void this.interruptAudio(chat).catch(() => {});
+            }
+            this.fireAndForget(() => handler({
+              type: 'speechStart',
+              ssrc: frame.ssrc,
+              rms: frame.rms,
+              timestampMs: frame.timestampMs,
+              ...(frame.peer ? { peer: frame.peer } : {}),
+            }));
+          }
+        } else {
+          st.silenceCount++;
+          st.speechCount = 0;
+          if (st.speaking && st.silenceCount >= minSilence) {
+            st.speaking = false;
+            this.fireAndForget(() => handler({
+              type: 'speechEnd',
+              ssrc: frame.ssrc,
+              rms: frame.rms,
+              timestampMs: frame.timestampMs,
+              ...(frame.peer ? { peer: frame.peer } : {}),
+            }));
+          }
+        }
+      },
+      options,
+    );
+  }
+
+  /**
+   * Subscribe to incoming decoded YUV420p (I420) video frames (`camera` and/or `screen`)
+   * for a group call, P2P call, or conference. Returns an unsubscribe function.
+   */
+  async onVideoFrame(
+    chat: ChatRef | ConferenceHandle,
+    handler: (frame: ExternalVideoFrame) => void | Promise<void>,
+    options: ExternalVideoSinkOptions = {},
+  ): Promise<() => void> {
+    const { publicId, nativeId } = await this.resolveExternalTarget(chat);
+    const targetDevice = options.device ?? 'both';
+    const width = options.width ?? 1280;
+    const height = options.height ?? 720;
+    const fps = options.fps ?? 25;
+
+    if (this.calls.has(publicId) && !this.recordings.has(publicId) && !this.folderRecorders.has(publicId) && !this.viewers.has(publicId)) {
+      const desc: Record<string, unknown> = {
+        microphone: { mediaSource: MediaSource.EXTERNAL, sampleRate: 48000, channelCount: 1, input: '', keepOpen: true },
+      };
+      if (targetDevice === 'camera' || targetDevice === 'both') {
+        desc.camera = { mediaSource: MediaSource.EXTERNAL, width, height, fps, input: '', keepOpen: true };
+      }
+      if (targetDevice === 'screen' || targetDevice === 'both') {
+        desc.screen = { mediaSource: MediaSource.EXTERNAL, width, height, fps, input: '', keepOpen: true };
+      }
+      await this.ntg.setStreamSources(nativeId, StreamMode.PLAYBACK, desc);
+    }
+
+    return this.nativeEvents.on('frames', (frameChatId, mode, device, frames) => {
+      if (frameChatId !== nativeId || mode !== StreamMode.PLAYBACK) {return;}
+      const isCamera = device === StreamDevice.CAMERA;
+      const isScreen = device === StreamDevice.SCREEN;
+      if (!isCamera && !isScreen) {return;}
+      const devName: 'camera' | 'screen' = isCamera ? 'camera' : 'screen';
+      if (targetDevice !== 'both' && targetDevice !== devName) {return;}
+      const registry = this.groupParticipants.get(publicId)?.registry;
+      const items = normalizeIncomingVideoFrames(
+        devName,
+        frames,
+        (ssrc, d) => registry?.lookup(ssrc, d)?.peer,
+      );
+      for (const item of items) {
+        this.fireAndForget(() => handler(item));
+      }
+    });
+  }
+
+  /**
+   * Connect an active call (`group`, `P2P peerId`, or `ConferenceHandle`) directly
+   * to Google's Gemini Multimodal Live API (`BidiGenerateContent` WebSocket).
+   */
+  async connectGeminiLive(
+    chat: ChatRef | ConferenceHandle,
+    options: GeminiLiveOptions,
+  ): Promise<GeminiLiveSession> {
+    const session = new GeminiLiveSession(this, chat, options);
+    return await session.start();
   }
 
   /**
@@ -1582,6 +1942,8 @@ export class TgCallsClient {
     const willAutoLeave = !advanced && active?.autoLeave === true && !claimed;
     if (willAutoLeave) {
       this.leave(chatId).catch(() => { /* best-effort */ });
+    } else if (!advanced && active) {
+      this.scheduleIdleTimer(chatId);
     }
     this.emit('streamEnd', {
       chatId,
@@ -1718,12 +2080,17 @@ export class TgCallsClient {
     this.videoState.clear();
     this.ended.clear();
     this.playbackControls.clear();
+    this.pacedAudioQueues.forEach((q) => q.interrupt());
+    this.pacedAudioQueues.clear();
+    this.idleTimers.forEach((t) => clearTimeout(t));
+    this.idleTimers.clear();
     if (options.preserveState) {this.persistenceSuspended--;}
   }
 }
 
 export * from './persistence.js';
 export * from './external-frames.js';
+export * from './gemini-live.js';
 export * from './broadcast.js';
 export * from './conference.js';
 export * from './rtmp.js';
@@ -1733,12 +2100,22 @@ export * from './adapters/index.js';
 export * from './errors.js';
 export type { CallCheckOptions, CallDenialReason, CallEligibilityInfo } from './eligibility.js';
 export { loadTl, resetTlCache, loadEvents } from './tl.js';
-export { resolveYouTube, resolveYouTubeStreams, pcmCommand, audioDescription, videoDescription, probeVideo } from './media.js';
+export {
+  AUDIO_FILTER_PRESETS,
+  resolveAudioFilterExpression,
+  resolveYouTube,
+  resolveYouTubeStreams,
+  pcmCommand,
+  audioDescription,
+  videoDescription,
+  probeVideo,
+} from './media.js';
 export { P2PCallManager } from './calls.js';
 export type { ListenCallsOptions, OutgoingCallOptions, CallRecordOptions, CallRecordingStopped } from './calls.js';
 export { VideoQuality } from './types.js';
 export type {
   ActiveCall,
+  AudioFilterPreset,
   AudioSource,
   ChatRef,
   EditParticipantOptions,
@@ -1748,6 +2125,7 @@ export type {
   MTProtoLike,
   MtcuteLike,
   MTProtoAdapter,
+  NativeRecordingOptions,
   PlaybackControls,
   PlaybackFilterOptions,
   RemoteSourceInfo,

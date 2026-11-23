@@ -31,6 +31,10 @@ When the current track finishes (`streamEnd`), `tgcalls-js` resolves what to pla
 | `skip` | `(chat) => Promise<void>` | Immediately advances to the next queued track (or hold track). If nothing is queued, pauses capture (`ntgcalls.pause()`) and keeps the call open. |
 | `playOnHold` | `(chat, source \| null) => Promise<void>` | Sets background/hold music looped while the queue is empty. Pass `null` to disable. |
 | `clearQueue` | `(chat) => Promise<void>` | Empties the queue and clears the hold track. The currently playing track keeps playing. |
+| `playNext` | `(chat, source) => Promise<void>` | Inserts `source` at the front of the queue (`index 0`), or starts immediately if idle / not in a call. |
+| `removeQueueTrack` | `(chat, index) => Promise<AudioSource \| null>` | Removes and returns the queued track at zero-based `index` (`null` if out of range). |
+| `moveQueueTrack` | `(chat, fromIndex, toIndex) => Promise<boolean>` | Moves a track within the queue from `fromIndex` to `toIndex`. |
+| `shuffleQueue` | `(chat) => Promise<AudioSource[]>` | Randomly shuffles the pending queue in place (Fisher-Yates) and returns a copy. |
 | `getCurrent` | `(chat) => AudioSource \| null` | Synchronous lookup of the active track. |
 | `getQueue` | `(chat) => AudioSource[]` | Synchronous shallow copy of the pending queue. |
 
@@ -87,7 +91,62 @@ await tg.setSpeed('@mygroup', 1.25);  // 1.25x speed
 await tg.setLoop('@mygroup', 'all');  // loop entire playlist
 
 // Check current settings
-const { volume, speed, loop } = tg.getPlaybackControls('@mygroup');
+const { volume, speed, loop, filter } = tg.getPlaybackControls('@mygroup');
+```
+
+### Audio Effect & Equalizer Presets (`setAudioFilter`)
+
+Apply real-time `ffmpeg` audio effects on active `file` and `url` tracks (automatically resumes from the current playback timestamp):
+
+| Preset | `ffmpeg` Filter (`-af`) | Effect |
+|---|---|---|
+| `'off'` | *(none)* | Default clean audio |
+| `'bassboost'` | `equalizer=f=60:width_type=h:width=50:g=10` | Deep +10 dB sub-bass boost |
+| `'nightcore'` | `asetrate=48000*1.25,aresample=48000` | Pitch + tempo up (1.25×) |
+| `'vaporwave'` | `asetrate=48000*0.8,aresample=48000` | Slowed & pitch-shifted down (0.8×) |
+| `'8d'` | `apulsator=hz=0.125` | Rotating stereo 8D panning |
+| `'karaoke'` | `stereotools=mlev=0.03` | Center vocal reduction |
+| `'treble'` | `equalizer=f=3000:width_type=h:width=1000:g=8` | Crisp +8 dB high-mid boost |
+| `'normalizer'` | `dynaudnorm=f=150:g=15` | Dynamic loudness normalization |
+| `'echo'` | `aecho=0.8:0.88:60:0.4` | Spatial echo / reverb |
+| `{ custom: string }` | Your custom `-af` string | Any custom `ffmpeg` audio filter chain |
+
+```ts
+await tg.setAudioFilter('@mygroup', 'bassboost');
+await tg.setAudioFilter('@mygroup', 'nightcore');
+await tg.setAudioFilter('@mygroup', { custom: 'acompressor,dynaudnorm' });
+await tg.setAudioFilter('@mygroup', 'off');
+```
+
+### Auto-Idle Disconnect (`idleTimeoutMs`)
+
+Automatically leave the group voice chat if playback stays idle (queue & hold empty) for `idleTimeoutMs` milliseconds:
+
+```ts
+// Global default on client construction:
+const tg = new TgCallsClient({ client, idleTimeoutMs: 180_000 }); // 3 minutes
+
+// Or per-chat on join / play / joinIdle:
+await tg.play('@mygroup', { kind: 'file', path: './song.mp3' }, {
+  idleTimeoutMs: 120_000,
+});
+```
+
+### Voice Chat Room Management (`setCallTitle`, `endGroupCall`, `exportCallInvite`, `toggleNativeRecording`)
+
+```ts
+// Update the Voice Chat title (e.g. Now Playing banner)
+await tg.setCallTitle('@mygroup', '🎵 Now Playing: Lofi Beats');
+
+// Generate a shareable Voice Chat invite link
+const inviteLink = await tg.exportCallInvite('@mygroup', { canSelfUnmute: true });
+
+// Start/stop Telegram's native server-side recording (red dot in Telegram UI, saved to Saved Messages)
+await tg.toggleNativeRecording('@mygroup', true, { title: 'Podcast Episode 1', video: true });
+await tg.toggleNativeRecording('@mygroup', false);
+
+// Completely end/discard the Voice Chat for all participants (admin required)
+await tg.endGroupCall('@mygroup');
 ```
 
 ### Pause, Resume, Mute & Unmute

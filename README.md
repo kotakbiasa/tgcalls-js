@@ -24,12 +24,12 @@ Built on [`ntgcalls`](https://www.npmjs.com/package/ntgcalls) (native C++ WebRTC
 | Capability | What's Included | Guide |
 |---|---|---|
 | **Group Voice & Video** | Stream files, URLs, HLS, YouTube (`yt-dlp`), custom PCM shells, camera video (`360p`–`4K`), and screen share presentations | [Group Calls](https://tgcalls-js.gitbook.io/docs/features-and-guides/group-calls) |
-| **Music & Moderation** | Per-chat queue (`play`/`enqueue`/`skip`/`playOnHold`), `seek`, `setVolume` (0–200%), `setSpeed` (0.5–2×), `setLoop`, `joinAs`, `getParticipants`, `setRaiseHand`, `muteParticipant` | [Playback & Controls](https://tgcalls-js.gitbook.io/docs/features-and-guides/playback-and-participants) |
+| **Music & Room Controls** | Queue (`play`/`enqueue`/`playNext`/`shuffleQueue`), `seek`, `setVolume`, `setSpeed`, `setAudioFilter` (`bassboost`/`nightcore`/`8d`), `idleTimeoutMs`, `setCallTitle`, `endGroupCall`, `exportCallInvite`, `toggleNativeRecording` | [Playback & Controls](https://tgcalls-js.gitbook.io/docs/features-and-guides/playback-and-participants) |
 | **1-on-1 P2P Calls** | Incoming & outgoing E2E voice/video calls, non-ringing preflight (`canRequestCall`), 4-emoji fingerprint, remote MP4/audio recording | [P2P Calls](https://tgcalls-js.gitbook.io/docs/features-and-guides/p2p-calls) |
 | **Recording** | Mixed group audio (`.wav`/`.mp3`/`.opus`) and segmented per-participant folder WAV/MP4 + `manifest.json` | [Recording](https://tgcalls-js.gitbook.io/docs/features-and-guides/recording) |
 | **RTMP & Livestreams** | H.264/AAC RTMP publisher (`joinRtmp` with queue, hold & reconnect) and broadcast viewer (`joinStreamMode`) | [RTMP & Streams](https://tgcalls-js.gitbook.io/docs/features-and-guides/rtmp-and-streams) |
 | **E2E Conferences** | Multi-party encrypted conferences (`createConference`, `joinConference`, invites, emoji check, capability-aware E2E messages on `ntgcalls` 4.x) | [E2E Conferences](https://tgcalls-js.gitbook.io/docs/features-and-guides/conferences) |
-| **Voice AI Frame Bridge** | Zero-`ffmpeg` real-time `{ kind: 'external' }` PCM audio (`onAudioFrame` / `pushAudioFrame` auto-10ms) and I420 video (`pushVideoFrame`) | [Voice AI Bridge](https://tgcalls-js.gitbook.io/docs/features-and-guides/external-frames) |
+| **Voice AI & Gemini Live** | Built-in `connectGeminiLive()`, zero-`ffmpeg` `{ kind: 'external' }` PCM resampler (`16k/24k ↔ 48k`), VAD (`onVoiceActivity`), barge-in (`interruptAudio`), and `onVideoFrame` + `i420ToBmp` | [Voice AI Bridge](https://tgcalls-js.gitbook.io/docs/features-and-guides/external-frames) |
 | **Restart Persistence** | Opt-in atomic desired-state store (`statePath`) and explicit `resumeFromState()` recovery | [Persistence](https://tgcalls-js.gitbook.io/docs/features-and-guides/persistence) |
 
 ---

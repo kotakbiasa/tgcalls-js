@@ -444,6 +444,47 @@ export class MtcuteAdapter implements MTProtoAdapter {
     });
   }
 
+  async editGroupCallTitle(call: unknown, title: string): Promise<unknown> {
+    return await this.client.call({
+      _: 'phone.editGroupCallTitle',
+      call: this.toInputGroupCall(call),
+      title,
+    });
+  }
+
+  async discardGroupCall(call: unknown): Promise<unknown> {
+    return await this.client.call({
+      _: 'phone.discardGroupCall',
+      call: this.toInputGroupCall(call),
+    });
+  }
+
+  async exportGroupCallInvite(call: unknown, options: { canSelfUnmute?: boolean } = {}): Promise<string> {
+    const res = (await this.client.call({
+      _: 'phone.exportGroupCallInvite',
+      call: this.toInputGroupCall(call),
+      ...(options.canSelfUnmute !== undefined ? { canSelfUnmute: options.canSelfUnmute } : {}),
+    })) as { link?: string };
+    if (typeof res?.link !== 'string' || !res.link) {
+      throw new Error('phone.exportGroupCallInvite did not return an invite link');
+    }
+    return res.link;
+  }
+
+  async toggleGroupCallRecord(
+    call: unknown,
+    options: { start: boolean; title?: string; video?: boolean; videoPortrait?: boolean },
+  ): Promise<unknown> {
+    return await this.client.call({
+      _: 'phone.toggleGroupCallRecord',
+      call: this.toInputGroupCall(call),
+      start: options.start,
+      ...(options.title !== undefined ? { title: options.title } : {}),
+      ...(options.video !== undefined ? { video: options.video } : {}),
+      ...(options.videoPortrait !== undefined ? { videoPortrait: options.videoPortrait } : {}),
+    });
+  }
+
   async getParticipants(
     call: unknown,
     options: { ids: bigint[]; sources: number[]; offset: string; limit: number; signal?: AbortSignal },

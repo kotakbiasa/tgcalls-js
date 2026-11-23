@@ -1,14 +1,53 @@
-# Voice AI & External Frame Bridge
+# Voice AI, Gemini Live & External Frame Bridge
 
-`tgcalls-js` provides a **zero-ffmpeg, low-latency, bidirectional audio & video frame bridge** built directly on `ntgcalls`'s `MediaSource.EXTERNAL`. This lets you connect Telegram calls directly to:
-
-- **Voice AI models** — Gemini Live API, OpenAI Realtime API, or custom STT (Deepgram / Whisper) + LLM + TTS (ElevenLabs / Cartesia / Kokoro) pipelines.
-- **Live audio synthesizers / DSP** — WebAudio, mixers, soundboards, or VoIP bridges.
-- **Programmatic video** — canvas rendering, live charts, headless browser frames, or AI avatar video (raw planar I420).
+`tgcalls-js` provides a **zero-ffmpeg, low-latency, bidirectional audio & video frame bridge** built directly on `ntgcalls`'s `MediaSource.EXTERNAL`, plus a **built-in Gemini Multimodal Live WebSocket bridge (`connectGeminiLive`)**, pure-JS PCM resampler (`16kHz / 24kHz ↔ 48kHz`), Voice Activity Detection (`onVoiceActivity`), paced barge-in interruption (`interruptAudio`), and incoming video frame subscription (`onVideoFrame` + `i420ToBmp`).
 
 ---
 
-## Why `{ kind: 'external' }`?
+## 1. Built-In Gemini Live Bridge (`connectGeminiLive`)
+
+Connect any Telegram group voice chat, 1-on-1 P2P call, or E2E conference directly to Google's **Gemini Multimodal Live API (`BidiGenerateContent`)** in a few lines of code — no external audio resamplers or WebSocket boilerplate required:
+
+```ts
+import { TgCallsClient } from 'tgcalls-js';
+
+// 1. Join the voice chat with EXTERNAL audio capture (zero ffmpeg required)
+await tg.join('@mygroup', {
+  kind: 'external',
+  sampleRate: 48000,
+  channels: 1,
+});
+
+// 2. Attach Gemini Multimodal Live directly to the call
+const gemini = await tg.connectGeminiLive('@mygroup', {
+  apiKey: process.env.GEMINI_API_KEY!,
+  model: 'models/gemini-2.5-flash-native-audio-preview-12-2025',
+  voiceName: 'Aoede', // 'Aoede' | 'Puck' | 'Charon' | 'Kore' | 'Fenrir'
+  systemInstruction: 'Kamu adalah asisten suara AI berbahasa Indonesia di Voice Chat Telegram.',
+  videoFrameIntervalMs: 2000, // optional: forward 1 camera/screen frame every 2s for multimodal vision!
+  onTextOutput: (text) => console.log('[Gemini]:', text),
+  onInterrupted: () => console.log('[Gemini]: user interrupted (barge-in)'),
+});
+
+// Optional: send a text prompt into the active voice session
+gemini.sendText('Sapa semua orang di voice chat ini!');
+
+// Disconnect Gemini Live when done
+await gemini.close();
+```
+
+### What `connectGeminiLive` Handles Automatically
+
+1. **Incoming Speech (`48 kHz → 16 kHz`):** Subscribes to `tg.onAudioFrame` with `targetSampleRate: 16000` and streams `audio/pcm;rate=16000` chunks to Gemini Live's `realtimeInput.audio`.
+2. **Outgoing AI Voice (`24 kHz → 48 kHz`):** Receives Gemini's `audio/pcm;rate=24000` chunks, resamples them to `48000 Hz`, and queues paced 10 ms frames into `ntgcalls`.
+3. **Instant Barge-In Interruption:** When a participant interrupts Gemini (`serverContent.interrupted: true`), automatically calls `tg.interruptAudio(chat)` to drop remaining queued TTS frames immediately.
+4. **Multimodal Vision (`videoFrameIntervalMs`):** When enabled, captures incoming `camera`/`screen` I420 frames via `onVideoFrame`, converts them to 24-bit RGB BMP via `i420ToBmp()`, and streams them to Gemini Live (`image/bmp`).
+
+---
+
+## 2. Custom Voice AI Pipelines (`onAudioFrame`, `pushAudioFrame`, `interruptAudio`, `onVoiceActivity`)
+
+If you are connecting to **OpenAI Realtime**, **Deepgram**, **Whisper**, **ElevenLabs**, or your own custom pipeline:
 
 Traditional `ffmpeg` file/shell piping adds process startup latency, container buffering, and breaks when you need to interrupt or stream dynamic AI speech chunks in real time.
 
@@ -107,18 +146,62 @@ Subscribes to incoming `StreamMode.PLAYBACK` microphone frames.
 
 | Option (`ExternalAudioSinkOptions`) | Type | Default | Description |
 |---|---|---|---|
-| `sampleRate` | `number` | `48000` | Decoded output sample rate in Hz |
-| `channels` | `1 \| 2` | `1` | Mono or stereo |
+| `sampleRate` | `number` | `48000` | Native `ntgcalls` PLAYBACK sample rate in Hz |
+| `channels` | `1 \| 2` | `1` | Native `ntgcalls` PLAYBACK channels |
+| `targetSampleRate` | `number` | `sampleRate` | Automatically resample delivered `frame.pcm` to this rate (e.g. `16000` for Gemini Live / STT) |
+| `targetChannels` | `1 \| 2` | `channels` | Automatically convert mono ↔ stereo |
 
 ### `pushAudioFrame(chat | handle, pcm, options?)`
 
 | Option (`PushAudioOptions`) | Type | Default | Description |
 |---|---|---|---|
 | `device` | `'microphone' \| 'speaker'` | `'microphone'` | Capture device target |
-| `sampleRate` | `number` | `48000` | Sample rate used to compute 10 ms frame byte size |
-| `channels` | `1 \| 2` | `1` | Channel count (`pcm.byteLength` must align to `channels * 2`) |
+| `sampleRate` | `number` | `48000` | Call capture sample rate used to compute 10 ms frame byte size |
+| `channels` | `1 \| 2` | `1` | Call capture channel count |
+| `inputSampleRate` | `number` | `sampleRate` | Input `pcm` sample rate (e.g. `24000` from Gemini Live / OpenAI Realtime); resampled automatically |
+| `inputChannels` | `1 \| 2` | `channels` | Input `pcm` channel count |
 | `chunk10ms` | `boolean` | `true` | Automatically slices larger buffers into 10 ms frames with `+10n` ms timestamps and zero-pads the final partial frame |
+| `paced` | `boolean` | `false` | Queues 10 ms frames into a paced sender so speech can be interrupted mid-sentence via `interruptAudio(chat)` |
 | `timestampMs` | `bigint` | `BigInt(Date.now())` | Base capture timestamp in ms |
+
+### `interruptAudio(chat | handle)` (Barge-In)
+
+Immediately clears any unplayed 10 ms frames queued with `paced: true` and returns `{ droppedFrames, droppedBytes }`:
+
+```ts
+const { droppedFrames, droppedBytes } = await tg.interruptAudio('@mygroup');
+```
+
+### `onVoiceActivity(chat | handle, handler, options?)` (VAD)
+
+Per-SSRC Voice Activity Detection computed from incoming PCM RMS energy:
+
+```ts
+const stopVad = await tg.onVoiceActivity('@mygroup', (event) => {
+  // event: { type: 'speechStart' | 'speechEnd', ssrc, rms, timestampMs, peer? }
+  console.log(event.type, 'from', event.peer?.id ?? event.ssrc, 'rms:', event.rms);
+}, {
+  thresholdRms: 0.015, // 0..1 normalized RMS threshold
+  speechFrames: 3,     // consecutive active frames to trigger speechStart
+  silenceFrames: 15,   // consecutive silent frames to trigger speechEnd
+  autoInterrupt: true, // automatically call interruptAudio(chat) on speechStart!
+});
+```
+
+### `onVideoFrame(chat | handle, handler, options?)` & `i420ToBmp`
+
+Receive decoded remote `camera` and `screen` YUV420p (I420) video frames in real time:
+
+```ts
+import { i420ToBmp } from 'tgcalls-js';
+
+const stopVideo = await tg.onVideoFrame('@mygroup', (frame) => {
+  // frame: { ssrc, device: 'camera' | 'screen', i420: Buffer, width, height, rotation, timestampMs, peer? }
+  const bmpBuffer = i420ToBmp(frame.i420, frame.width, frame.height);
+}, {
+  device: 'both', // 'camera' | 'screen' | 'both'
+});
+```
 
 ### `pushVideoFrame(chat | handle, i420, options)`
 

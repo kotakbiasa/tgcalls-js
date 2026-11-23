@@ -69,9 +69,11 @@ setSource(chat: ChatRef, source: AudioSource, playback?: PlaybackFilterOptions):
 seek(chat: ChatRef, seconds: number): Promise<void>
 setVolume(chat: ChatRef, percent: number): Promise<void>          // 0..200% (default 100)
 setSpeed(chat: ChatRef, rate: number): Promise<void>              // 0.5..2.0x (default 1.0)
+setAudioFilter(chat: ChatRef, filter: AudioFilterPreset): Promise<void> // 'bassboost' | 'nightcore' | '8d' | ...
+getAudioFilter(chat: ChatRef): AudioFilterPreset                  // sync
 setLoop(chat: ChatRef, mode: LoopMode): Promise<void>             // 'off' | 'one' | 'all'
 getLoop(chat: ChatRef): LoopMode                                  // sync
-getPlaybackControls(chat: ChatRef): PlaybackControls              // sync: { volume, speed, loop }
+getPlaybackControls(chat: ChatRef): PlaybackControls              // sync: { volume, speed, loop, filter }
 pause(chat: ChatRef): Promise<boolean>
 resume(chat: ChatRef): Promise<boolean>
 mute(chat: ChatRef): Promise<boolean>
@@ -79,7 +81,7 @@ unmute(chat: ChatRef): Promise<boolean>
 time(chat: ChatRef): Promise<number>                              // seconds streamed
 ```
 
-#### Group participant controls
+#### Group participant & room management controls
 
 ```ts
 getParticipants(chat: ChatRef): Promise<ParticipantInfo[]>
@@ -87,14 +89,22 @@ editParticipant(chat: ChatRef, participant: ChatRef | 'self', options: EditParti
 setRaiseHand(chat: ChatRef, raised: boolean): Promise<void>
 muteParticipant(chat: ChatRef, participant: ChatRef, muted?: boolean): Promise<void>
 setParticipantVolume(chat: ChatRef, participant: ChatRef, percent: number): Promise<void> // 0..200%
+setCallTitle(chat: ChatRef, title: string): Promise<void>
+endGroupCall(chat: ChatRef): Promise<void>
+exportCallInvite(chat: ChatRef, options?: { canSelfUnmute?: boolean }): Promise<string>
+toggleNativeRecording(chat: ChatRef, enabled: boolean, options?: NativeRecordingOptions): Promise<void>
 ```
 
-#### Real-time external frame bridge (Voice AI)
+#### Real-time external frame bridge & Gemini Live (Voice AI)
 
 ```ts
 onAudioFrame(chat: ChatRef | ConferenceHandle, handler: (frame: ExternalAudioFrame) => void | Promise<void>, options?: ExternalAudioSinkOptions): Promise<() => void>
+onVoiceActivity(chat: ChatRef | ConferenceHandle, handler: (event: VoiceActivityEvent) => void | Promise<void>, options?: VoiceActivityOptions): Promise<() => void>
+onVideoFrame(chat: ChatRef | ConferenceHandle, handler: (frame: ExternalVideoFrame) => void | Promise<void>, options?: ExternalVideoSinkOptions): Promise<() => void>
 pushAudioFrame(chat: ChatRef | ConferenceHandle, pcm: Uint8Array, options?: PushAudioOptions): Promise<void>
+interruptAudio(chat: ChatRef | ConferenceHandle): Promise<InterruptAudioResult>
 pushVideoFrame(chat: ChatRef | ConferenceHandle, i420: Uint8Array, options: PushVideoOptions): Promise<void>
+connectGeminiLive(chat: ChatRef | ConferenceHandle, options: GeminiLiveOptions): Promise<GeminiLiveSession>
 ```
 
 See [Voice AI & External Frame Bridge](features/external-frames.md) for full details and options.
@@ -105,6 +115,10 @@ See [Voice AI & External Frame Bridge](features/external-frames.md) for full det
 play(chat: ChatRef, source: AudioSource, options?: JoinOptions): Promise<JoinResult>
 enqueue(chat: ChatRef, source: AudioSource): Promise<void>   // alias: then()
 then(chat: ChatRef, source: AudioSource): Promise<void>
+playNext(chat: ChatRef, source: AudioSource): Promise<void>  // insert at index 0
+removeQueueTrack(chat: ChatRef, index: number): Promise<AudioSource | null>
+moveQueueTrack(chat: ChatRef, fromIndex: number, toIndex: number): Promise<boolean>
+shuffleQueue(chat: ChatRef): Promise<AudioSource[]>
 skip(chat: ChatRef): Promise<void>
 playOnHold(chat: ChatRef, source: AudioSource | null): Promise<void>
 clearQueue(chat: ChatRef): Promise<void>

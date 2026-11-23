@@ -88,6 +88,11 @@ export interface JoinOptions {
   inviteHash?: string;
   /** Optional peer to join the voice chat as (e.g. a channel or alias; defaults to self). */
   joinAs?: ChatRef;
+  /**
+   * Automatically leave the group call if playback remains idle / queue empty
+   * for this many milliseconds (0 or undefined disables the timer).
+   */
+  idleTimeoutMs?: number;
   /** Share video from the same source (file/url) with these parameters. */
   video?: VideoOptions | false;
   /** Join the presentation (screen share) channel for this call. */
@@ -129,6 +134,8 @@ export interface TgCallsOptions {
   statePath?: string;
   persistence?: Pick<StateStoreOptions, 'allowShell' | 'maxBytes'>;
   restore?: ResumeControllerOptions;
+  /** Default idle timeout in ms before leaving an empty/idle group call (0/undefined = disabled). */
+  idleTimeoutMs?: number;
   /** ffmpeg binary (default "ffmpeg"). */
   ffmpegPath?: string;
   /** ffprobe binary (default "ffprobe"). */
@@ -156,6 +163,19 @@ export interface StreamEndInfo {
 /** Playlist repeat behavior for a chat. */
 export type LoopMode = 'off' | 'one' | 'all';
 
+/** Built-in ffmpeg audio filter presets or custom `-af` filter string. */
+export type AudioFilterPreset =
+  | 'off'
+  | 'bassboost'
+  | 'nightcore'
+  | 'vaporwave'
+  | '8d'
+  | 'karaoke'
+  | 'treble'
+  | 'normalizer'
+  | 'echo'
+  | { custom: string };
+
 /** Optional ffmpeg playback filters for file/url sources. */
 export interface PlaybackFilterOptions {
   /** Seek start position in seconds (>= 0). */
@@ -164,6 +184,8 @@ export interface PlaybackFilterOptions {
   volume?: number;
   /** Playback speed multiplier (0.5..2.0, default 1.0). */
   speed?: number;
+  /** Optional audio effect preset or custom ffmpeg `-af` expression. */
+  filter?: AudioFilterPreset;
 }
 
 /** Current playback controls snapshot returned by getPlaybackControls(). */
@@ -171,6 +193,14 @@ export interface PlaybackControls {
   volume: number;
   speed: number;
   loop: LoopMode;
+  filter: AudioFilterPreset;
+}
+
+/** Options for toggleNativeRecording() (phone.toggleGroupCallRecord). */
+export interface NativeRecordingOptions {
+  title?: string;
+  video?: boolean;
+  videoPortrait?: boolean;
 }
 
 /** Options for editing a group call participant via phone.editGroupCallParticipant. */

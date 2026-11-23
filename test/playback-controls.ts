@@ -66,7 +66,7 @@ import { TgCallsClient, pcmCommand, videoDescription } from '../src/index.js';
     await tg.play(chatId, { kind: 'file', path: '/tmp/track1.mp3' });
     await tg.enqueue(chatId, { kind: 'file', path: '/tmp/track2.mp3' });
 
-    assert.deepEqual(tg.getPlaybackControls(chatId), { volume: 100, speed: 1, loop: 'off' });
+    assert.deepEqual(tg.getPlaybackControls(chatId), { volume: 100, speed: 1, loop: 'off', filter: 'off' });
 
     await tg.seek(chatId, 30);
     assert.ok(sources.at(-1)!.includes('-ss 30 -i '));
@@ -80,9 +80,31 @@ import { TgCallsClient, pcmCommand, videoDescription } from '../src/index.js';
     assert.equal(tg.getPlaybackControls(chatId).speed, 1.5);
     assert.ok(sources.at(-1)!.includes('-af volume=0.6,atempo=1.5 '));
 
+    await tg.setAudioFilter(chatId, 'bassboost');
+    assert.equal(tg.getAudioFilter(chatId), 'bassboost');
+    assert.ok(sources.at(-1)!.includes('equalizer=f=60:width_type=h:width=50:g=10'));
+
+    await tg.setAudioFilter(chatId, { custom: 'aecho=0.8:0.9:1000:0.3' });
+    assert.ok(sources.at(-1)!.includes('aecho=0.8:0.9:1000:0.3'));
+
+    await tg.setAudioFilter(chatId, 'off');
+    assert.equal(tg.getAudioFilter(chatId), 'off');
+
+    // Advanced queue manipulation: playNext, moveQueueTrack, removeQueueTrack, shuffleQueue
+    await tg.playNext(chatId, { kind: 'file', path: '/tmp/priority.mp3' });
+    assert.equal((tg.getQueue(chatId)[0] as any).path, '/tmp/priority.mp3');
+    assert.equal(await tg.moveQueueTrack(chatId, 0, 1), true);
+    assert.equal((tg.getQueue(chatId)[1] as any).path, '/tmp/priority.mp3');
+    await tg.shuffleQueue(chatId);
+    assert.equal(tg.getQueue(chatId).length, 2);
+    const removed = await tg.removeQueueTrack(chatId, tg.getQueue(chatId).findIndex((t: any) => t.path === '/tmp/priority.mp3'));
+    assert.equal((removed as any)?.path, '/tmp/priority.mp3');
+    assert.equal(tg.getQueue(chatId).length, 1);
+
     await assert.rejects(() => tg.seek(chatId, -1), /non-negative/i);
     await assert.rejects(() => tg.setVolume(chatId, 250), /between 0 and 200/i);
     await assert.rejects(() => tg.setSpeed(chatId, 3), /between 0\.5 and 2\.0/i);
+    await assert.rejects(() => tg.setAudioFilter(chatId, { custom: '' }), /non-empty/i);
 
     // loop = 'one': replays track1 without consuming track2 from queue
     await tg.setLoop(chatId, 'one');
@@ -100,7 +122,7 @@ import { TgCallsClient, pcmCommand, videoDescription } from '../src/index.js';
     assert.deepEqual(tg.getQueue(chatId), [{ kind: 'file', path: '/tmp/track1.mp3' }]);
 
     await tg.leave(chatId);
-    assert.deepEqual(tg.getPlaybackControls(chatId), { volume: 100, speed: 1, loop: 'off' });
+    assert.deepEqual(tg.getPlaybackControls(chatId), { volume: 100, speed: 1, loop: 'off', filter: 'off' });
   } finally {
     await tg.dispose();
   }
