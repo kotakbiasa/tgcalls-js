@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/logo.png" alt="tgcalls-js logo" width="120" />
+</p>
+
 # tgcalls-js
 
 **pytgcalls-style Telegram group-call wrapper for Node.js.** Stream audio, video,
