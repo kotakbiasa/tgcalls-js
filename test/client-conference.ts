@@ -63,5 +63,60 @@ try {
   assert.notEqual(first.nativeId, second.nativeId);
   await tg.dispose();
   assert.equal(trace.filter((value) => Array.isArray(value) && value[0] === 'leave').length, 2);
-  console.log('Client conference facade: native initialization/capture order, router emoji, invite, capability refusals and dispose passed (fixtures only).');
+
+  // Capability-aware E2E message encryption/decryption (ntgcalls >= 4.0.0-alpha03)
+  let onUpdate: ((u: unknown) => void) | undefined;
+  const sentCipher: Buffer[] = [];
+  const receivedMessages: any[] = [];
+  const adapterV4: any = {
+    ...adapter,
+    installUpdateHandler: (cb: (u: unknown) => void) => { onUpdate = cb; return () => {}; },
+    sendConferenceMessage: async (_call: unknown, encryptedMessage: Buffer) => {
+      sentCipher.push(encryptedMessage);
+      return true;
+    },
+  };
+  const tgV4 = new TgCallsClient({ client: adapterV4 });
+  for (const [name, value] of Object.entries({
+    createP2pCall: async () => {},
+    initConference: async () => ({ payload: '{"ssrc":-17}', publicKey: Buffer.alloc(32, 3), block: block(0x639a3db6) }),
+    applyBlocks: async () => {},
+    connect: async () => {}, stop: async () => {},
+    setStreamSources: async () => {},
+    mute: async () => true, unmute: async () => true, pause: async () => true, resume: async () => true,
+    finishSubchainRequest: async () => {}, updateAudioSsrcMappings: async () => {},
+    addIncomingVideo: async () => 1, removeIncomingVideo: async () => true, getEmojisFingerprint: async () => '',
+    encryptMessage: async (_id: bigint, data: number[]) => {
+      assert.ok(Array.isArray(data), 'encryptMessage receives JS Array for N-API bytes boundary');
+      return Buffer.from(data.map((b) => b ^ 0x5a));
+    },
+    decryptMessage: async (_id: bigint, _userId: bigint, data: number[]) => {
+      assert.ok(Array.isArray(data), 'decryptMessage receives JS Array for N-API bytes boundary');
+      return Buffer.from(data.map((b) => b ^ 0x5a));
+    },
+    onStreamEnd: () => {}, onConnectionChange: () => {}, onRemoteSourceChange: () => {},
+    onOutboundBlock: () => {}, onSubchainRequest: () => {}, onRequestParticipants: () => {}, onUpdateEmojis: () => {},
+  })) Object.defineProperty(tgV4.ntg, name, { configurable: true, value });
+  try {
+    tgV4.on('conferenceMessage', (ev) => { receivedMessages.push(ev); });
+    assert.equal(tgV4.getConferenceCapabilities().applicationEncryption, true);
+    const handle = await tgV4.createConference();
+    const receipt = await tgV4.sendConferenceMessage(handle, 'hello e2e');
+    assert.equal(sentCipher.length, 1);
+    assert.equal(receipt.bytes, sentCipher[0]!.length);
+    onUpdate!({
+      _: 'updateGroupCallEncryptedMessage',
+      call,
+      fromId: { _: 'peerUser', userId: 42n },
+      encryptedMessage: sentCipher[0]!,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(receivedMessages.length, 1);
+    assert.equal(receivedMessages[0].fromUserId, 42n);
+    assert.equal(receivedMessages[0].text, 'hello e2e');
+    assert.equal(receivedMessages[0].randomId, receipt.randomId);
+  } finally {
+    await tgV4.dispose();
+  }
+  console.log('Client conference facade: native initialization/capture order, router emoji, invite, capability refusals, E2E message encryption/decryption and dispose passed (fixtures only).');
 } finally { await tg.dispose(); }

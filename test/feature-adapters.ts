@@ -143,6 +143,7 @@ const { Api } = require('teleproto');
       if (
         name === 'phone.GetGroupCallChainBlocks' ||
         name === 'phone.SendConferenceCallBroadcast' ||
+        name === 'phone.SendGroupCallEncryptedMessage' ||
         name === 'phone.InviteConferenceCallParticipant' ||
         name === 'phone.LeaveGroupCall'
       ) {
@@ -265,6 +266,10 @@ const { Api } = require('teleproto');
 
   await adapter.sendConferenceBroadcast(created.info.call, Buffer.from([0xe7, 0x2a, 0x51, 0xd1]));
   assert.equal(invocations.at(-1)!.req.className, 'phone.SendConferenceCallBroadcast');
+
+  await adapter.sendConferenceMessage(created.info.call, Buffer.from([1, 2, 3, 4]));
+  assert.equal(invocations.at(-1)!.req.className, 'phone.SendGroupCallEncryptedMessage');
+  assert.ok(invocations.at(-1)!.bytes.includes(Buffer.from([1, 2, 3, 4])));
 
   await adapter.inviteConferenceParticipant(created.info.call, 444n, { video: true });
   assert.equal(invocations.at(-1)!.req.className, 'phone.InviteConferenceCallParticipant');
@@ -431,6 +436,10 @@ const { Api } = require('teleproto');
   await mt.inviteConferenceParticipant(created.info.call, 88n, { video: false });
   assert.equal(calls.at(-1)!.req.userId._, 'inputUser');
   assert.equal(calls.at(-1)!.req.userId.userId, 88);
+
+  await mt.sendConferenceMessage(created.info.call, Buffer.from([9, 8, 7]));
+  assert.equal(calls.at(-1)!.req._, 'phone.sendGroupCallEncryptedMessage');
+  assert.equal(calls.at(-1)!.req.call.id, idLong);
 
   await mt.leaveConference(created.info.call, 77);
   assert.equal(calls.at(-1)!.req._, 'phone.leaveGroupCall');

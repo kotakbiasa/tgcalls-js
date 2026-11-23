@@ -582,6 +582,16 @@ export class GramjsAdapter implements MTProtoAdapter {
     );
   }
 
+  async sendConferenceMessage(call: unknown, encryptedMessage: Buffer, signal?: AbortSignal): Promise<unknown> {
+    return await this.invokeWithSignal(
+      new this.Api.phone.SendGroupCallEncryptedMessage({
+        call: this.toInputGroupCall(call),
+        encryptedMessage: Buffer.from(encryptedMessage),
+      }),
+      signal,
+    );
+  }
+
   private async toInputUser(user: unknown): Promise<unknown> {
     if (user && typeof user === 'object') {
       const u = user as Record<string, any>;

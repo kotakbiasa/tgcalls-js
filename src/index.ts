@@ -38,7 +38,17 @@ import { getCallDenialReason as checkCall, type CallCheckOptions, type CallDenia
 import { NativeEventRouter } from './native-events.js';
 import { FolderRecorder } from './folder-recording.js';
 import { BroadcastController, type BroadcastAdapterPort } from './broadcast.js';
-import { ConferenceController, type ConferenceAdapter, type ConferenceHandle, type ConferenceRef, type ConferenceOptions, type NativeConferencePort } from './conference.js';
+import {
+  ConferenceController,
+  type ConferenceAdapter,
+  type ConferenceHandle,
+  type ConferenceMessageEvent,
+  type ConferenceMessageInput,
+  type ConferenceMessageReceipt,
+  type ConferenceRef,
+  type ConferenceOptions,
+  type NativeConferencePort,
+} from './conference.js';
 import { RtmpPublisher, type RtmpPublisherOptions } from './rtmp.js';
 import { GroupParticipantController } from './group-participants.js';
 import { type ParticipantInfo } from './participants.js';
@@ -55,6 +65,7 @@ export interface TgCallsEvents {
   recordingStopped: (chatId: bigint, info: RecordingStoppedInfo) => void | Promise<void>;
   recordingError: (chatId: bigint, error: Error) => void | Promise<void>;
   broadcastError: (chatId: bigint, error: Error) => void | Promise<void>;
+  conferenceMessage: (event: ConferenceMessageEvent) => void | Promise<void>;
   conferenceError: (error: unknown) => void | Promise<void>;
   persistenceError: (error: PersistenceError) => void | Promise<void>;
   /** A remote participant's stream (camera / microphone / screen) changed state. */
@@ -1068,6 +1079,7 @@ export class TgCallsClient {
     const required = ['getSelfInfo', 'getConferenceInfo', 'createConference', 'joinConference', 'getChainBlocks',
       'sendConferenceBroadcast', 'getParticipants', 'inviteConferenceParticipant', 'leaveConference'] as const;
     for (const method of required) if (typeof adapter[method] !== 'function') throw new Error(`Conference adapter capability missing: ${method}`);
+    const ntgAny = this.ntg as any;
     const native: NativeConferencePort = {
       createP2pCall: (id) => this.ntg.createP2pCall(id),
       initConference: (id, user, last) => this.ntg.initConference(id, user, last as unknown as Buffer),
@@ -1079,9 +1091,16 @@ export class TgCallsClient {
       addIncomingVideo: (id, user, endpoint, groups) => this.ntg.addIncomingVideo(id, user, endpoint, groups),
       removeIncomingVideo: (id, endpoint) => this.ntg.removeIncomingVideo(id, endpoint),
       getEmojisFingerprint: (id) => this.ntg.getEmojisFingerprint(id),
+      ...(typeof ntgAny.encryptMessage === 'function'
+        ? { encryptMessage: (id: bigint, data: number[]) => ntgAny.encryptMessage(id, data) }
+        : {}),
+      ...(typeof ntgAny.decryptMessage === 'function'
+        ? { decryptMessage: (id: bigint, userId: bigint, data: number[]) => ntgAny.decryptMessage(id, userId, data) }
+        : {}),
     };
     const controller = new ConferenceController({ native, adapter: adapter as ConferenceAdapter,
       allocateNativeId: () => this.allocateFeatureId(),
+      onMessage: (event) => this.emit('conferenceMessage', event),
       onError: (error) => this.emit('conferenceError', error) });
     this.conferenceController = controller;
     this.nativeEvents.on('outboundBlock', (id, bytes) => controller.onOutboundBlock(id, bytes));
@@ -1128,7 +1147,7 @@ export class TgCallsClient {
   removeConferenceParticipants(handle: ConferenceHandle, users: ChatRef[], options: { kick?: boolean; onlyLeft?: boolean } = {}): Promise<never> {
     return this.conferences().removeConferenceParticipants(handle, users, options);
   }
-  sendConferenceMessage(handle: ConferenceHandle, message: unknown): Promise<never> { return this.conferences().sendConferenceMessage(handle, message); }
+  sendConferenceMessage(handle: ConferenceHandle, message: ConferenceMessageInput): Promise<ConferenceMessageReceipt> { return this.conferences().sendConferenceMessage(handle, message); }
   rekeyConference(handle: ConferenceHandle): Promise<never> { return this.conferences().rekeyConference(handle); }
 
   // ------------------------------------------------------------- P2P calls

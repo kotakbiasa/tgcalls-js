@@ -665,6 +665,17 @@ export class MtcuteAdapter implements MTProtoAdapter {
     );
   }
 
+  async sendConferenceMessage(call: unknown, encryptedMessage: Buffer, signal?: AbortSignal): Promise<unknown> {
+    return await this.callWithSignal(
+      {
+        _: 'phone.sendGroupCallEncryptedMessage',
+        call: this.toInputGroupCall(call),
+        encryptedMessage: Buffer.from(encryptedMessage),
+      },
+      signal,
+    );
+  }
+
   private async toInputUser(user: unknown): Promise<Record<string, unknown>> {
     if (user && typeof user === 'object') {
       const u = user as Record<string, any>;

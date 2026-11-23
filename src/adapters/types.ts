@@ -85,6 +85,7 @@ export interface MTProtoAdapter {
     signal?: AbortSignal,
   ): Promise<unknown>;
   sendConferenceBroadcast?(call: unknown, block: Buffer, signal?: AbortSignal): Promise<unknown>;
+  sendConferenceMessage?(call: unknown, encryptedMessage: Buffer, signal?: AbortSignal): Promise<unknown>;
   inviteConferenceParticipant?(
     call: unknown,
     user: unknown,

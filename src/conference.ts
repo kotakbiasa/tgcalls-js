@@ -34,6 +34,7 @@ export interface ConferenceAdapter {
   }): Promise<ConferenceResult>;
   getChainBlocks(call: unknown, subchain: number, offset: number, limit: number, signal?: AbortSignal): Promise<unknown>;
   sendConferenceBroadcast(call: unknown, block: Buffer, signal?: AbortSignal): Promise<unknown>;
+  sendConferenceMessage?(call: unknown, encryptedMessage: Buffer, signal?: AbortSignal): Promise<unknown>;
   getParticipants(call: unknown, options: {
     ids: bigint[]; sources: number[]; offset: string; limit: number; signal?: AbortSignal;
   }): Promise<ConferenceParticipantPage>;
@@ -52,6 +53,27 @@ export interface NativeConferencePort {
   addIncomingVideo(id: bigint, userId: bigint, endpoint: string, groups: { semantics: string; ssrcs: number[] }[]): Promise<number>;
   removeIncomingVideo(id: bigint, endpoint: string): Promise<boolean>;
   getEmojisFingerprint(id: bigint): Promise<string>;
+  /** Available in ntgcalls >= 4.0.0-alpha03; absent in 3.0.7. */
+  encryptMessage?(id: bigint, data: number[]): Promise<Buffer>;
+  /** Available in ntgcalls >= 4.0.0-alpha03; absent in 3.0.7. */
+  decryptMessage?(id: bigint, userId: bigint, data: number[]): Promise<Buffer>;
+}
+export type ConferenceMessageInput =
+  | string
+  | { text: string; entities?: unknown[]; randomId?: bigint | string }
+  | Uint8Array;
+export interface ConferenceMessageReceipt {
+  randomId: string;
+  bytes: number;
+}
+export interface ConferenceMessageEvent {
+  handle: ConferenceHandle;
+  callId: bigint;
+  fromUserId: bigint;
+  raw: Buffer;
+  text?: string;
+  randomId?: string;
+  parsed?: unknown;
 }
 export interface ConferenceOptions {
   signal?: AbortSignal; muted?: boolean; videoStopped?: boolean;
@@ -108,14 +130,18 @@ export class ConferenceController {
     /** Facade must reserve a fresh ID across group/P2P/conference and every generation. */
     allocateNativeId: () => bigint;
     rpcTimeoutMs?: number; onError?: (error: unknown) => void;
+    onMessage?: (event: ConferenceMessageEvent) => void;
     schedule?: (callback: () => void, delayMs: number) => () => void;
   }) {}
 
   getCapabilities() {
     const coreLifecycle = ['createP2pCall', 'initConference', 'applyBlocks', 'finishSubchainRequest', 'connect', 'stop',
       'updateAudioSsrcMappings', 'addIncomingVideo', 'removeIncomingVideo'].every((name) => typeof (this.ports.native as any)[name] === 'function');
-    return Object.freeze({ nativeVersion: '3.0.7', coreLifecycle, removeParticipants: false,
-      rekey: false, applicationEncryption: false, cryptoHealth: false,
+    const applicationEncryption =
+      typeof this.ports.native.encryptMessage === 'function' &&
+      typeof this.ports.native.decryptMessage === 'function';
+    return Object.freeze({ nativeVersion: applicationEncryption ? '4.0.0+' : '3.0.7', coreLifecycle, removeParticipants: false,
+      rekey: false, applicationEncryption, cryptoHealth: false,
       fullSecurityConformance: false, liveVerified: false });
   }
   private requireCore(): void {
@@ -559,11 +585,79 @@ export class ConferenceController {
     throw new UnsupportedNativeCapabilityError('removal/rekey');
   }
   async rekeyConference(_handle: ConferenceHandle): Promise<never> { throw new UnsupportedNativeCapabilityError('rekey'); }
-  async sendConferenceMessage(_handle: ConferenceHandle, _message: unknown): Promise<never> {
-    throw new UnsupportedNativeCapabilityError('application encryption');
+  async sendConferenceMessage(handle: ConferenceHandle, message: ConferenceMessageInput): Promise<ConferenceMessageReceipt> {
+    if (typeof this.ports.native.encryptMessage !== 'function') {
+      throw new UnsupportedNativeCapabilityError('application encryption');
+    }
+    if (typeof this.ports.adapter.sendConferenceMessage !== 'function') {
+      fail('Conference adapter capability missing: sendConferenceMessage');
+    }
+    const s = this.session(handle);
+    this.active(s);
+    if (!s.joined || !s.info) fail('Conference session is not joined');
+    let randomId: string;
+    let plaintext: Buffer;
+    if (message instanceof Uint8Array) {
+      randomId = randomBytes(8).readBigInt64LE().toString();
+      plaintext = Buffer.from(message);
+    } else if (typeof message === 'string') {
+      randomId = randomBytes(8).readBigInt64LE().toString();
+      plaintext = Buffer.from(JSON.stringify({
+        '@type': 'groupCallMessage',
+        random_id: randomId,
+        text: { text: message, entities: [] },
+      }), 'utf8');
+    } else if (message && typeof message === 'object' && typeof message.text === 'string') {
+      randomId = message.randomId !== undefined ? String(message.randomId) : randomBytes(8).readBigInt64LE().toString();
+      plaintext = Buffer.from(JSON.stringify({
+        '@type': 'groupCallMessage',
+        random_id: randomId,
+        text: { text: message.text, entities: Array.isArray(message.entities) ? message.entities : [] },
+      }), 'utf8');
+    } else {
+      fail('Conference message must be a string, { text, entities? }, or Uint8Array');
+    }
+    const encrypted = await this.ports.native.encryptMessage(s.nativeId, Array.from(plaintext));
+    const encryptedBuf = Buffer.from(encrypted);
+    if (!encryptedBuf.length) fail('Native encryptMessage returned empty ciphertext');
+    await this.rpc(s, (signal) => this.ports.adapter.sendConferenceMessage!(s.info!.call, encryptedBuf, signal));
+    return { randomId, bytes: encryptedBuf.length };
   }
-  async onEncryptedMessage(_nativeId: bigint, _update: unknown): Promise<never> {
-    throw new UnsupportedNativeCapabilityError('application decryption');
+  async onEncryptedMessage(nativeId: bigint, update: unknown): Promise<ConferenceMessageEvent | null> {
+    if (typeof this.ports.native.decryptMessage !== 'function') {
+      throw new UnsupportedNativeCapabilityError('application decryption');
+    }
+    const s = this.nativeSessions.get(nativeId);
+    if (!s || !s.joined || s.stopped || !s.info) return null;
+    const u = update as Record<string, any> | undefined;
+    const from = u?.fromId ?? u?.from_id;
+    const rawUserId = from?.userId ?? from?.user_id ?? (typeof from === 'bigint' || typeof from === 'number' ? from : undefined);
+    const fromUserId = rawUserId !== undefined ? long(rawUserId) : 0n;
+    if (fromUserId <= 0n) fail('Encrypted conference message requires a positive sender user id');
+    const cipherRaw = u?.encryptedMessage ?? u?.encrypted_message;
+    if (!(cipherRaw instanceof Uint8Array) || !cipherRaw.length) fail('Missing encrypted conference message bytes');
+    const plain = Buffer.from(await this.ports.native.decryptMessage(s.nativeId, fromUserId, Array.from(cipherRaw)));
+    let parsed: unknown;
+    let text: string | undefined;
+    let randomId: string | undefined;
+    try {
+      const json = JSON.parse(plain.toString('utf8')) as Record<string, any>;
+      parsed = json;
+      if (typeof json?.text === 'string') text = json.text;
+      else if (typeof json?.text?.text === 'string') text = json.text.text;
+      if (typeof json?.random_id === 'string') randomId = json.random_id;
+    } catch { /* non-JSON custom binary payload */ }
+    const event: ConferenceMessageEvent = {
+      handle: s.handle,
+      callId: s.info.id,
+      fromUserId,
+      raw: plain,
+      ...(text !== undefined ? { text } : {}),
+      ...(randomId !== undefined ? { randomId } : {}),
+      ...(parsed !== undefined ? { parsed } : {}),
+    };
+    this.ports.onMessage?.(event);
+    return event;
   }
   async getCryptoHealth(_handle: ConferenceHandle): Promise<never> { throw new UnsupportedNativeCapabilityError('crypto health'); }
   async inviteConferenceParticipants(handle: ConferenceHandle, users: unknown[], options: { video?: boolean } = {}): Promise<void> {
