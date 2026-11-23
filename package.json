@@ -24,7 +24,7 @@
   "scripts": {
     "build": "tsc",
     "typecheck:all": "tsc -p tsconfig.all.json",
-    "test": "tsx test/run.ts",
+    "test": "node test/all.mjs",
     "smoke": "node smoke.mjs",
     "prepare": "npm run build",
     "prepublishOnly": "npm run build && npm run typecheck:all && npm run smoke"

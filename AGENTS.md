@@ -14,7 +14,7 @@ ESM (`"type": "module"`), strict TypeScript, Node ≥ 18.
 npm install            # npm 11+ may warn "install scripts blocked" for esbuild — cosmetic
 npm run build          # tsc → dist/
 npm run typecheck:all  # tsc -p tsconfig.all.json (src + examples + test)
-npm test               # tsx test/run.ts — offline suite, NO Telegram credentials
+npm test               # node test/all.mjs — every test/*.ts in isolated processes, NO credentials
 npm run smoke          # node smoke.mjs — verify dist/index.js exports
 ```
 
@@ -61,7 +61,9 @@ Fix: `npm install @ntgcalls/linux-x64@3.0.7 --no-save` (match the `ntgcalls` ver
   for shared types. Examples live in `examples/`, tests in `test/`.
 - Examples use `teleproto` (the maintained GramJS fork); runtime still supports `telegram`.
 - Docs: `README.md`, `docs/*.md`, `llms.txt`, `llms-full.txt`. Keep them in sync with the
-  public API when you change signatures.
+  public API when you change signatures. `llms-full.txt` is generated from the
+  sources declared in `scripts/generate-docs.py`: run `python3 scripts/generate-docs.py`
+  and verify with `python3 scripts/generate-docs.py --check`.
 
 ## Release
 

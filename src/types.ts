@@ -2,7 +2,9 @@
  * tgcalls-js — shared types.
  */
 
+import type { PeerIdentity } from './participants.js';
 import type { StreamDevice, StreamStatus } from 'ntgcalls';
+import type { ResumeControllerOptions, StateStoreOptions } from './persistence.js';
 
 /** Reference to a chat: username, t.me link, raw id, or marked id (-100...). */
 export type ChatRef = string | number | bigint;
@@ -12,6 +14,9 @@ export interface RemoteSourceInfo {
   ssrc: number;
   state: StreamStatus;
   device: StreamDevice;
+  peer?: PeerIdentity;
+  endpoint?: string;
+  origin?: 'mtproto' | 'native';
 }
 
 /**
@@ -21,43 +26,13 @@ export interface RemoteSourceInfo {
 export interface MTProtoLike {
   invoke(request: unknown): Promise<unknown>;
   getEntity?(ref: unknown): Promise<unknown>;
+  getMe?(): Promise<unknown>;
   addEventHandler?(cb: (update: unknown) => void, opts?: unknown): unknown;
   removeEventHandler?(cb: unknown, opts?: unknown): void;
 }
 
-/**
- * Minimal MTProto client surface for mtcute (@mtcute/node, @mtcute/core).
- */
-export interface MtcuteLike {
-  call(request: unknown): Promise<unknown>;
-  resolvePeer?(ref: unknown): Promise<unknown>;
-  resolveChannel?(ref: unknown): Promise<unknown>;
-  getChat?(ref: unknown): Promise<{ id: number | bigint | string }>;
-  onRawUpdate: {
-    add(cb: (update: any) => void): unknown;
-    remove?(cb: any): void;
-  };
-}
-
-/**
- * Adapter interface decoupling TgCallsClient from any specific MTProto library.
- */
-export interface MTProtoAdapter {
-  readonly isAdapter: true;
-  resolveChatId(chat: ChatRef): Promise<bigint>;
-  /** Create a call if missing; `rtmpStream` is forwarded to CreateGroupCall. */
-  getGroupCall(chatId: bigint, allowCreate: boolean, rtmpStream?: boolean): Promise<unknown>;
-  joinGroupCall(inputCall: unknown, joinParams: string, options: JoinOptions): Promise<unknown>;
-  leaveGroupCall(inputCall: unknown, ssrc: number): Promise<void>;
-  joinPresentationCall(inputCall: unknown, presentationParams: string): Promise<unknown>;
-  leavePresentationCall(inputCall: unknown): Promise<void>;
-  extractConnectionParams(result: unknown): string | null;
-  installUpdateHandler(
-    onUpdate: (update: unknown) => void,
-    onConnectionParams: (params: string) => void,
-  ): () => void;
-  dispose?(): void;
-}
+export type { MtcuteLike, MTProtoAdapter } from './adapters/types.js';
+import type { MtcuteLike, MTProtoAdapter } from './adapters/types.js';
 
 
 /** Audio source for streaming into a call. */
@@ -98,6 +73,8 @@ export const VideoQuality = {
 export interface JoinOptions {
   /** Join with the microphone muted (default false). */
   muted?: boolean;
+  /** Join with capture paused before the transport is connected. */
+  paused?: boolean;
   /** Automatically leave the call when the audio stream ends (default true). */
   autoLeave?: boolean;
   /** Start a new voice chat if the chat has none (requires admin rights; default false). */
@@ -141,6 +118,10 @@ export interface TgCallsOptions {
   client: MTProtoLike | MtcuteLike | MTProtoAdapter;
   /** TL API namespace for this client. Pass per client when using telegram and teleproto together. */
   Api?: unknown;
+  /** Opt-in desired group state file; no auto-join occurs during construction. */
+  statePath?: string;
+  persistence?: Pick<StateStoreOptions, 'allowShell' | 'maxBytes'>;
+  restore?: ResumeControllerOptions;
   /** ffmpeg binary (default "ffmpeg"). */
   ffmpegPath?: string;
   /** ffprobe binary (default "ffprobe"). */
@@ -173,8 +154,28 @@ export interface RecordOptions {
   channels?: number;
 }
 
+export interface FolderRecordingTarget {
+  dir: string;
+  video?: boolean;
+  sampleRate?: number;
+  channels?: 1 | 2;
+}
+
+export interface RecordingStoppedInfo {
+  path: string;
+  peer?: PeerIdentity;
+  device: 'microphone' | 'camera' | 'screen';
+  segment: number;
+  reason: string;
+  status: 'saved' | 'empty' | 'failed';
+  error?: Error;
+}
+
 /** State of an active recording (getRecording()). */
 export interface RecordingInfo {
+  mode?: 'mixed' | 'folder';
+  dir?: string;
+  video?: boolean;
   /** Output file path (container inferred from extension). */
   path: string;
   sampleRate: number;

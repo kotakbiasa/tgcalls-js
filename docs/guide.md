@@ -144,8 +144,10 @@ await tg.stopListeningCalls();
 
 The DH key exchange and WebRTC engine run in ntgcalls; tgcalls-js orchestrates the
 MTProto signaling (`phone.acceptCall`, signaling relay, teardown on hangup).
-Requires a GramJS/teleproto client. `autoAccept` defaults to true; `onIncoming` can
-reject specific callers. Outgoing calls and multi-party conference are follow-up work.
+Requires a GramJS/teleproto or mtcute client. `autoAccept` defaults to true; `onIncoming` can
+reject specific callers. `callUser()` places outgoing calls after `listenCalls()` is configured.
+The roadmap branch also exposes an experimental native conference core with explicit
+security limits; see [Roadmap APIs](roadmap-api.md).
 
 ## Events
 

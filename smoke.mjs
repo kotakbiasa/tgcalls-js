@@ -11,6 +11,14 @@ import {
   isMtcuteClient,
   isGramjsClient,
   createAdapter,
+  RtmpPublisher,
+  BroadcastController,
+  ConferenceController,
+  ParticipantRegistry,
+  FolderRecorder,
+  StateStore,
+  ResumeController,
+  MediaDependencyError,
 } from './dist/index.js';
 
 console.log('🔍 Running smoke tests on dist/index.js...');
@@ -27,5 +35,10 @@ assert.equal(typeof isMtcuteClient, 'function', 'isMtcuteClient should be export
 assert.equal(typeof isGramjsClient, 'function', 'isGramjsClient should be exported');
 assert.equal(typeof createAdapter, 'function', 'createAdapter should be exported');
 
+
+for (const value of [RtmpPublisher, BroadcastController, ConferenceController, ParticipantRegistry,
+  FolderRecorder, StateStore, ResumeController, MediaDependencyError]) assert.equal(typeof value, 'function');
+for (const name of ['canRequestCall', 'getCallDenialReason', 'joinRtmp', 'joinStreamMode', 'createConference',
+  'joinConference', 'resumeFromState', 'flushState']) assert.equal(typeof TgCallsClient.prototype[name], 'function');
 
 console.log('✅ Smoke test passed: all exports verified successfully!');
