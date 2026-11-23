@@ -46,7 +46,12 @@ export type AudioSource =
    */
   | { kind: 'url'; url: string; audioUrl?: string }
   /** Full custom shell command that pipes s16le PCM 48k stereo to stdout. */
-  | { kind: 'shell'; command: string };
+  | { kind: 'shell'; command: string }
+  /**
+   * Real-time programmatic PCM audio source (ntgcalls MediaSource.EXTERNAL).
+   * Feed PCM frames with `client.pushAudioFrame(chat, pcm)` — no ffmpeg required.
+   */
+  | { kind: 'external'; sampleRate?: number; channels?: 1 | 2; keepOpen?: boolean };
 
 /** Video stream parameters. */
 export interface VideoOptions {

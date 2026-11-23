@@ -54,6 +54,15 @@ import { GroupParticipantController } from './group-participants.js';
 import { type ParticipantInfo } from './participants.js';
 import { asBigInt0 } from './adapters/utils.js';
 import { StateStore, ResumeController, type SavedGroup, type ResumeOptions, type ResumeReport, type PersistenceError } from './persistence.js';
+import {
+  normalizeIncomingAudioFrames,
+  pushExternalAudioFrame,
+  pushExternalVideoFrame,
+  type ExternalAudioFrame,
+  type ExternalAudioSinkOptions,
+  type PushAudioOptions,
+  type PushVideoOptions,
+} from './external-frames.js';
 
 export interface TgCallsEvents {
   /** Fired when the native audio stream ends (e.g. file finished). */
@@ -347,13 +356,14 @@ export class TgCallsClient {
     const cameraVideo = options.presentation !== true
       && options.video !== false
       && options.video !== undefined
-      && source.kind !== 'shell';
+      && source.kind !== 'shell'
+      && source.kind !== 'external';
     if (cameraVideo) {
       const srcPath = source.kind === 'file' ? source.path : source.url;
       const targetOpts = typeof options.video === 'object' ? options.video : {};
       const probed = await probeVideo(srcPath, this.opts, targetOpts);
       media.camera = videoDescription(
-        source as Exclude<AudioSource, { kind: 'shell' }>,
+        source as Exclude<AudioSource, { kind: 'shell' | 'external' }>,
         { ...probed, ...targetOpts, width: probed.width, height: probed.height, fps: probed.fps },
         this.opts,
       );
@@ -373,7 +383,7 @@ export class TgCallsClient {
     await this.ntg.connect(chatId, connParams, false);
 
     let presentationActive = false;
-    if (options.presentation === true && source.kind !== 'shell') {
+    if (options.presentation === true && source.kind !== 'shell' && source.kind !== 'external') {
       try {
         const srcPath = source.kind === 'file' ? source.path : source.url;
         const targetOpts = typeof options.video === 'object' ? options.video : {};
@@ -390,7 +400,7 @@ export class TgCallsClient {
         // camera with the screen channel (audio restarts together with it).
         await this.ntg.setStreamSources(chatId, StreamMode.CAPTURE, {
           microphone: audioDescription(source, this.opts),
-          screen: videoDescription(source as Exclude<AudioSource, { kind: 'shell' }>, videoOpts, this.opts),
+          screen: videoDescription(source as Exclude<AudioSource, { kind: 'shell' | 'external' }>, videoOpts, this.opts),
         });
         this.ended.delete(chatId);
         const presConnParams = await this.joinPresentationCall(inputCall, presParamsPayload);
@@ -408,7 +418,7 @@ export class TgCallsClient {
       call: inputCall,
       ssrc,
       source,
-      videoActive: !presentationActive && options.video !== false && options.video !== undefined && source.kind !== 'shell',
+      videoActive: !presentationActive && options.video !== false && options.video !== undefined && source.kind !== 'shell' && source.kind !== 'external',
       presentationActive,
       muted: options.muted === true,
       autoLeave: options.autoLeave !== false,
@@ -796,8 +806,8 @@ export class TgCallsClient {
     // video channel (camera/screen) from the new source or it would vanish.
     const vs = this.videoState.get(id);
     if (vs !== undefined) {
-      if (source.kind === 'shell') {
-        this.videoState.delete(id); // shell = audio-only, video channel ends
+      if (source.kind === 'shell' || source.kind === 'external') {
+        this.videoState.delete(id); // shell/external = audio-only, video channel ends
       } else {
         const srcPath = source.kind === 'file' ? source.path : source.url;
         const probed = await probeVideo(srcPath, this.opts, vs.target);
@@ -1117,7 +1127,7 @@ export class TgCallsClient {
         signal.throwIfAborted();
         const media: import('ntgcalls').MediaDescription = {};
         if (options.source) media.microphone = audioDescription(options.source, this.opts);
-        if (options.video && options.source && options.source.kind !== 'shell') {
+        if (options.video && options.source && options.source.kind !== 'shell' && options.source.kind !== 'external') {
           const input = options.source.kind === 'file' ? options.source.path : options.source.url;
           const probed = await probeVideo(input, this.opts, options.video);
           media.camera = videoDescription(options.source, { ...options.video, ...probed }, this.opts);
@@ -1201,12 +1211,93 @@ export class TgCallsClient {
     return this.callManager?.activePeers() ?? [];
   }
 
+  // ------------------------------------------------ external frame bridge
+
+  private async resolveExternalTarget(chat: ChatRef | ConferenceHandle): Promise<{ publicId: bigint; nativeId: bigint }> {
+    if (typeof chat === 'object') {
+      return { publicId: chat.nativeId, nativeId: chat.nativeId };
+    }
+    const id = await this.resolveChatId(chat);
+    return { publicId: id, nativeId: this.nativeGroupId(id) };
+  }
+
+  /**
+   * Push signed 16-bit little-endian PCM bytes into an active EXTERNAL capture
+   * stream (group call, P2P call, or conference). Automatically chunks larger
+   * buffers into 10ms WebRTC frames unless `chunk10ms: false` is passed.
+   */
+  async pushAudioFrame(
+    chat: ChatRef | ConferenceHandle,
+    pcm: Uint8Array,
+    options: PushAudioOptions = {},
+  ): Promise<void> {
+    const { nativeId } = await this.resolveExternalTarget(chat);
+    await pushExternalAudioFrame(this.ntg, nativeId, pcm, options);
+  }
+
+  /**
+   * Push a raw planar YUV420p (I420) video frame into an active EXTERNAL camera
+   * or screen capture stream (group call, P2P call, or conference).
+   */
+  async pushVideoFrame(
+    chat: ChatRef | ConferenceHandle,
+    i420: Uint8Array,
+    options: PushVideoOptions,
+  ): Promise<void> {
+    const { nativeId } = await this.resolveExternalTarget(chat);
+    await pushExternalVideoFrame(this.ntg, nativeId, i420, options);
+  }
+
+  /**
+   * Subscribe to incoming decoded PCM audio frames for a group call, P2P call,
+   * or conference. For active group calls without an active recording, ensures
+   * PLAYBACK microphone is configured as `MediaSource.EXTERNAL` automatically.
+   * Returns an unsubscribe function.
+   */
+  async onAudioFrame(
+    chat: ChatRef | ConferenceHandle,
+    handler: (frame: ExternalAudioFrame) => void | Promise<void>,
+    options: ExternalAudioSinkOptions = {},
+  ): Promise<() => void> {
+    const { publicId, nativeId } = await this.resolveExternalTarget(chat);
+    const sampleRate = options.sampleRate ?? 48000;
+    const channels = options.channels ?? 1;
+    if (!Number.isInteger(sampleRate) || sampleRate <= 0) {
+      throw new Error('sampleRate must be a positive integer');
+    }
+    if (channels !== 1 && channels !== 2) {
+      throw new Error('channels must be 1 or 2');
+    }
+    // Configure EXTERNAL playback microphone on active group calls if no recorder owns PLAYBACK.
+    if (this.calls.has(publicId) && !this.recordings.has(publicId) && !this.folderRecorders.has(publicId) && !this.viewers.has(publicId)) {
+      await this.ntg.setStreamSources(nativeId, StreamMode.PLAYBACK, {
+        microphone: {
+          mediaSource: MediaSource.EXTERNAL,
+          sampleRate,
+          channelCount: channels,
+          input: '',
+          keepOpen: true,
+        },
+      });
+    }
+    return this.nativeEvents.on('frames', (frameChatId, mode, device, frames) => {
+      if (frameChatId !== nativeId || mode !== StreamMode.PLAYBACK || device !== StreamDevice.MICROPHONE) {
+        return;
+      }
+      const registry = this.groupParticipants.get(publicId)?.registry;
+      const items = normalizeIncomingAudioFrames(frames, (ssrc) => registry?.lookup(ssrc, 'microphone')?.peer);
+      for (const item of items) {
+        this.fireAndForget(() => handler(item));
+      }
+    });
+  }
+
   /**
    * Start screen/video presentation (screen share channel) for an active call.
    * `source` must be file/url (ffmpeg-readable). RTC connection required —
    * not available in STREAM/RTMP connection modes.
    */
-  async startPresentation(chatId: ChatRef, source: Exclude<AudioSource, { kind: 'shell' }>, video: VideoOptions = {}): Promise<void> {
+  async startPresentation(chatId: ChatRef, source: Exclude<AudioSource, { kind: 'shell' | 'external' }>, video: VideoOptions = {}): Promise<void> {
     const id = await this.resolveChatId(chatId);
     if (!this.calls.has(id)) {
       throw new Error(`No active call in chat ${id}`);
@@ -1473,6 +1564,7 @@ export class TgCallsClient {
 }
 
 export * from './persistence.js';
+export * from './external-frames.js';
 export * from './broadcast.js';
 export * from './conference.js';
 export * from './rtmp.js';

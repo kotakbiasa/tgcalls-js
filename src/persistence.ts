@@ -89,7 +89,7 @@ function chatId(value: unknown, allowBigInt: boolean): string {
 
 function source(value: unknown): AudioSource | null {
   if (value === null) { return null; }
-  const src = object(value, ['kind', 'path', 'url', 'audioUrl', 'command'], 'source');
+  const src = object(value, ['kind', 'path', 'url', 'audioUrl', 'command', 'sampleRate', 'channels', 'keepOpen'], 'source');
   switch (src.kind) {
     case 'file':
       object(src, ['kind', 'path'], 'source.file');
@@ -103,6 +103,14 @@ function source(value: unknown): AudioSource | null {
     case 'shell':
       object(src, ['kind', 'command'], 'source.shell');
       return { kind: 'shell', command: text(src.command, 'source.command') };
+    case 'external':
+      object(src, ['kind', 'sampleRate', 'channels', 'keepOpen'], 'source.external');
+      return {
+        kind: 'external',
+        ...(src.sampleRate !== undefined ? { sampleRate: integer(src.sampleRate, 8000, 192000, 'source.sampleRate') } : {}),
+        ...(src.channels !== undefined ? { channels: src.channels === 1 || src.channels === 2 ? src.channels : invalid('source.channels') } : {}),
+        ...(src.keepOpen !== undefined ? { keepOpen: typeof src.keepOpen === 'boolean' ? src.keepOpen : invalid('source.keepOpen') } : {}),
+      };
     default: return invalid('source.kind');
   }
 }
@@ -150,7 +158,7 @@ function savedGroup(value: unknown, allowBigInt: boolean): SavedGroup {
   if (group.video !== undefined) {
     const video = object(group.video, ['device', 'options'], 'group.video');
     if (video.device !== 'camera' && video.device !== 'screen') { return invalid('video.device'); }
-    if (!result.source || result.source.kind === 'shell') { return invalid('video.source'); }
+    if (!result.source || result.source.kind === 'shell' || result.source.kind === 'external') { return invalid('video.source'); }
     result.video = { device: video.device, options: videoOptions(video.options) };
   }
   if (group.kind === 'group-viewer' && (result.source !== null || result.video !== undefined

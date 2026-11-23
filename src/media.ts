@@ -32,6 +32,9 @@ export function requireMediaExecutable(executable: string, binary: 'ffmpeg' | 'f
 /** Build the shell command that pipes decoded s16le PCM to stdout. */
 export function pcmCommand(source: AudioSource, opts: TgCallsOptions): string {
   if (source.kind === 'shell') {return source.command;}
+  if (source.kind === 'external') {
+    throw new Error('External audio sources push frames via pushAudioFrame() and do not use a shell command.');
+  }
   const ffmpeg = shellQuote(requireMediaExecutable(opts.ffmpegPath ?? 'ffmpeg', 'ffmpeg'));
   switch (source.kind) {
     case 'file':
@@ -41,8 +44,25 @@ export function pcmCommand(source: AudioSource, opts: TgCallsOptions): string {
   }
 }
 
-/** Build the ntgcalls microphone description (SHELL source, PCM via ffmpeg). */
+/** Build the ntgcalls microphone description (EXTERNAL PCM or SHELL via ffmpeg). */
 export function audioDescription(source: AudioSource, opts: TgCallsOptions) {
+  if (source.kind === 'external') {
+    const sampleRate = source.sampleRate ?? 48000;
+    const channelCount = source.channels ?? 1;
+    if (!Number.isInteger(sampleRate) || sampleRate <= 0) {
+      throw new Error('External audio source sampleRate must be a positive integer');
+    }
+    if (channelCount !== 1 && channelCount !== 2) {
+      throw new Error('External audio source channels must be 1 or 2');
+    }
+    return {
+      mediaSource: MediaSource.EXTERNAL,
+      input: '',
+      sampleRate,
+      channelCount,
+      keepOpen: source.keepOpen ?? true,
+    };
+  }
   return {
     mediaSource: MediaSource.SHELL,
     input: pcmCommand(source, opts),
@@ -180,7 +200,7 @@ export async function probeVideo(
  * FFmpeg pipeline.
  */
 export function videoDescription(
-  source: Exclude<AudioSource, { kind: 'shell' }>,
+  source: Exclude<AudioSource, { kind: 'shell' | 'external' }>,
   video: VideoOptions,
   opts: TgCallsOptions,
 ) {

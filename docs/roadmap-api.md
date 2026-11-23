@@ -100,3 +100,20 @@ Construction never rejoins. The private versioned file stores desired group chat
 Restore refetches current group calls, uses fresh native SSRCs, mutes/pauses capture before connecting, restores the queue, and opens recording in a fresh segment/directory. It starts media from the beginning. `restore.resolveSource` can refresh expiring URLs. Persisting shell sources requires `persistence.allowShell:true`; replaying them separately requires `restore.allowShell:true`. The default skips shell groups.
 
 `dispose()` normally removes groups explicitly left; use `preserveState:true` for a planned restart. P2P sessions, conference private keys, native sockets and RTMP keys are not persisted or automatically redialed. `resumeFromState` returns per-chat results and does not create a missing group call by default.
+
+## Real-time external frame bridge (Voice AI / live PCM)
+
+```ts
+await tg.join(group, { kind: 'external', sampleRate: 48000, channels: 1 });
+
+// Receive decoded remote s16le PCM frames (e.g. feed into STT / Gemini Live):
+const off = await tg.onAudioFrame(group, (frame) => {
+  // frame: { ssrc, pcm: Buffer, timestampMs: bigint, peer? }
+  stt.write(frame.pcm);
+});
+
+// Push synthesized s16le PCM audio back into the call (auto-sliced into 10ms frames):
+await tg.pushAudioFrame(group, ttsPcmBuffer, { sampleRate: 48000, channels: 1 });
+```
+
+`{ kind: 'external' }` configures `MediaSource.EXTERNAL` with zero `ffmpeg` requirement and works in group calls, P2P calls (`listenCalls({ source: { kind: 'external' } })`), and conferences. `pushVideoFrame(chat, i420, { width, height })` pushes raw planar YUV420p frames to `camera` or `screen`. Both push helpers handle the `ntgcalls` JS-array N-API boundary automatically.

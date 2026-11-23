@@ -318,7 +318,7 @@ export class P2PCallManager {
       step('createP2pCall ok');
       const mediaOpts = { client: {} as never, ffmpegPath: this.opts.ffmpegPath, ffprobePath: this.opts.ffprobePath } as TgCallsOptions;
       const media: Record<string, unknown> = { microphone: audioDescription(this.opts.source, mediaOpts) };
-      if (this.opts.video && this.opts.source.kind !== 'shell') {
+      if (this.opts.video && this.opts.source.kind !== 'shell' && this.opts.source.kind !== 'external') {
         const targetOpts = typeof this.opts.video === 'object' ? this.opts.video : {};
         const srcPath = this.opts.source.kind === 'file' ? this.opts.source.path : this.opts.source.url;
         const probed = await probeVideo(srcPath, mediaOpts, targetOpts);
@@ -391,7 +391,7 @@ export class P2PCallManager {
       await this.ntg.createP2pCall(userId);
       nativeCreated = true;
       const media: Record<string, unknown> = { microphone: audioDescription(this.opts.source, mediaOpts) };
-      if (wantVideo && this.opts.source.kind !== 'shell') {
+      if (wantVideo && this.opts.source.kind !== 'shell' && this.opts.source.kind !== 'external') {
         const targetOpts = typeof opts.video === 'object' ? opts.video : {};
         const srcPath = this.opts.source.kind === 'file' ? this.opts.source.path : this.opts.source.url;
         const probed = await probeVideo(srcPath, mediaOpts, targetOpts);
