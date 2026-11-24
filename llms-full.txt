@@ -668,7 +668,7 @@ leave(chat: ChatRef): Promise<void>   // ntgcalls.stop + phone.leaveGroupCall (b
 dispose(options?: { preserveState?: boolean }): Promise<void> // stop owned calls/publishers; preserve desired state for planned restart
 ```
 
-#### Introspection
+#### Introspection, Hardware Devices & Diagnostics
 
 ```ts
 activeCalls(): bigint[]                       // marked ids of all active calls
@@ -677,6 +677,13 @@ isActive(chat: ChatRef): boolean              // sync; same alias rules
 resolveChatId(chat: ChatRef): Promise<bigint> // username / t.me link / id → marked id
 getEmojiFingerprint(chat: ChatRef | ConferenceHandle): Promise<string | null>  // 4 emojis, null when not in that call
 getConnectionMode(chat: ChatRef): Promise<string | null>    // NONE | RTC | STREAM | RTMP
+getMediaState(chat: ChatRef | ConferenceHandle): Promise<MediaState | null>
+getMediaDevices(): MediaDevices               // local hardware mic / speaker / camera / screen (also static)
+enableSpeakerOutput(chat: ChatRef | ConferenceHandle, speaker?: string | DeviceInfo, opts?): Promise<void>
+ping(): Promise<number>                       // Telegram MTProto round-trip latency in ms
+cpuUsage(): Promise<number>                   // native WebRTC CPU usage percentage
+TgCallsClient.nativePing(): string            // returns "pong"
+TgCallsClient.setNativeLogLevel(level: LogLevel): void
 ```
 
 `getEmojiFingerprint` returns the four-emoji key check both sides must compare out
@@ -718,7 +725,8 @@ type AudioSource =
   | { kind: 'file'; path: string }
   | { kind: 'url'; url: string; audioUrl?: string }
   | { kind: 'shell'; command: string }
-  | { kind: 'external'; sampleRate?: number; channels?: 1 | 2; keepOpen?: boolean };
+  | { kind: 'external'; sampleRate?: number; channels?: 1 | 2; keepOpen?: boolean }
+  | { kind: 'device'; microphone?: string | DeviceInfo | false; camera?: string | DeviceInfo; screen?: string | DeviceInfo; sampleRate?: number; channels?: 1 | 2 };
 ```
 
 ### `JoinOptions`

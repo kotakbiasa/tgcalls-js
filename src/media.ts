@@ -6,9 +6,60 @@
 import { spawn } from 'child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { MediaDependencyError } from './errors.js';
-import { MediaSource } from 'ntgcalls';
+import { MediaDependencyError, TgCallsError } from './errors.js';
+import { MediaSource, NTgCalls, type DeviceInfo, type MediaDevices } from 'ntgcalls';
 import type { AudioFilterPreset, AudioSource, PlaybackFilterOptions, TgCallsOptions, VideoOptions } from './types.js';
+
+/**
+ * Resolve a hardware device selector (`undefined` / `'default'`, human-readable
+ * device name, `DeviceInfo` object, or raw metadata JSON string) to its native
+ * `ntgcalls` metadata string.
+ */
+export function resolveDeviceMetadata(
+  kind: keyof MediaDevices,
+  selector?: string | DeviceInfo,
+  devices: MediaDevices = NTgCalls.getMediaDevices(),
+): string {
+  const list = devices[kind] ?? [];
+  if (selector && typeof selector === 'object' && typeof selector.metadata === 'string' && selector.metadata) {
+    return selector.metadata;
+  }
+  if (selector === undefined || selector === 'default') {
+    if (list.length === 0) {
+      throw new TgCallsError(`No local ${kind} hardware devices reported by ntgcalls`);
+    }
+    return list[0]!.metadata;
+  }
+  const trimmed = String(selector).trim();
+  if (!trimmed) {
+    throw new TgCallsError(`Invalid empty ${kind} device selector`);
+  }
+  const byName = list.find((d) => d.name === trimmed || d.name.toLowerCase() === trimmed.toLowerCase());
+  if (byName) {
+    return byName.metadata;
+  }
+  return trimmed;
+}
+
+/** Build an ntgcalls camera (`MediaSource.DEVICE`) or screen (`MediaSource.DESKTOP`) description. */
+export function deviceVideoDescription(
+  kind: 'camera' | 'screen',
+  selector: string | DeviceInfo | undefined,
+  video: VideoOptions = {},
+  devices?: MediaDevices,
+) {
+  const width = video.width ? (video.width % 2 !== 0 ? video.width - 1 : video.width) : 1280;
+  const height = video.height ? (video.height % 2 !== 0 ? video.height - 1 : video.height) : 720;
+  const fps = video.fps ?? 30;
+  return {
+    mediaSource: kind === 'screen' ? MediaSource.DESKTOP : MediaSource.DEVICE,
+    input: resolveDeviceMetadata(kind, selector, devices),
+    width,
+    height,
+    fps,
+    keepOpen: true,
+  };
+}
 
 export const AUDIO_FILTER_PRESETS: Record<Exclude<AudioFilterPreset, 'off' | { custom: string }>, string> = {
   bassboost: 'equalizer=f=60:width_type=h:width=50:g=10',
@@ -67,6 +118,9 @@ export function pcmCommand(source: AudioSource, opts: TgCallsOptions, playback?:
   if (source.kind === 'external') {
     throw new Error('External audio sources push frames via pushAudioFrame() and do not use a shell command.');
   }
+  if (source.kind === 'device') {
+    throw new Error('Hardware device sources use MediaSource.DEVICE natively and do not use a shell command.');
+  }
   const ffmpeg = shellQuote(requireMediaExecutable(opts.ffmpegPath ?? 'ffmpeg', 'ffmpeg'));
   const seekPrefix = playback?.startSec !== undefined && playback.startSec > 0
     ? `-ss ${formatTrimmed(playback.startSec, 3)} `
@@ -91,8 +145,22 @@ export function pcmCommand(source: AudioSource, opts: TgCallsOptions, playback?:
   }
 }
 
-/** Build the ntgcalls microphone description (EXTERNAL PCM or SHELL via ffmpeg). */
+/** Build the ntgcalls microphone description (EXTERNAL, DEVICE, or SHELL via ffmpeg). */
 export function audioDescription(source: AudioSource, opts: TgCallsOptions, playback?: PlaybackFilterOptions) {
+  if (source.kind === 'device') {
+    if (source.microphone === false) {
+      throw new TgCallsError('Device source has microphone disabled (microphone: false)');
+    }
+    const sampleRate = source.sampleRate ?? 48000;
+    const channelCount = source.channels ?? 2;
+    return {
+      mediaSource: MediaSource.DEVICE,
+      input: resolveDeviceMetadata('microphone', source.microphone),
+      sampleRate,
+      channelCount,
+      keepOpen: true,
+    };
+  }
   if (source.kind === 'external') {
     const sampleRate = source.sampleRate ?? 48000;
     const channelCount = source.channels ?? 1;
@@ -247,7 +315,7 @@ export async function probeVideo(
  * FFmpeg pipeline.
  */
 export function videoDescription(
-  source: Exclude<AudioSource, { kind: 'shell' | 'external' }>,
+  source: Exclude<AudioSource, { kind: 'shell' | 'external' | 'device' }>,
   video: VideoOptions,
   opts: TgCallsOptions,
   playback?: PlaybackFilterOptions,

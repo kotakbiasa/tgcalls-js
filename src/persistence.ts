@@ -89,7 +89,11 @@ function chatId(value: unknown, allowBigInt: boolean): string {
 
 function source(value: unknown): AudioSource | null {
   if (value === null) { return null; }
-  const src = object(value, ['kind', 'path', 'url', 'audioUrl', 'command', 'sampleRate', 'channels', 'keepOpen'], 'source');
+  const src = object(
+    value,
+    ['kind', 'path', 'url', 'audioUrl', 'command', 'sampleRate', 'channels', 'keepOpen', 'microphone', 'camera', 'screen'],
+    'source',
+  );
   switch (src.kind) {
     case 'file':
       object(src, ['kind', 'path'], 'source.file');
@@ -111,6 +115,24 @@ function source(value: unknown): AudioSource | null {
         ...(src.channels !== undefined ? { channels: src.channels === 1 || src.channels === 2 ? src.channels : invalid('source.channels') } : {}),
         ...(src.keepOpen !== undefined ? { keepOpen: typeof src.keepOpen === 'boolean' ? src.keepOpen : invalid('source.keepOpen') } : {}),
       };
+    case 'device': {
+      object(src, ['kind', 'microphone', 'camera', 'screen', 'sampleRate', 'channels'], 'source.device');
+      const devField = (v: unknown, loc: string): string | { name: string; metadata: string } => {
+        if (typeof v === 'string') {return text(v, loc);}
+        const d = object(v, ['name', 'metadata'], loc);
+        return { name: text(d.name, `${loc}.name`), metadata: text(d.metadata, `${loc}.metadata`) };
+      };
+      return {
+        kind: 'device',
+        ...(src.microphone !== undefined
+          ? { microphone: src.microphone === false ? false : devField(src.microphone, 'source.microphone') }
+          : {}),
+        ...(src.camera !== undefined ? { camera: devField(src.camera, 'source.camera') } : {}),
+        ...(src.screen !== undefined ? { screen: devField(src.screen, 'source.screen') } : {}),
+        ...(src.sampleRate !== undefined ? { sampleRate: integer(src.sampleRate, 8000, 192000, 'source.sampleRate') } : {}),
+        ...(src.channels !== undefined ? { channels: src.channels === 1 || src.channels === 2 ? src.channels : invalid('source.channels') } : {}),
+      };
+    }
     default: return invalid('source.kind');
   }
 }

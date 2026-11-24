@@ -13,17 +13,31 @@
  *   5. ntgcalls.connect(chatId, connParams)   → media starts flowing
  */
 
-import { NTgCalls, ConnectionState, ConnectionMode, MediaSource, StreamMode, StreamType, StreamDevice, StreamStatus } from 'ntgcalls';
+import {
+  NTgCalls,
+  ConnectionState,
+  ConnectionMode,
+  LogLevel,
+  MediaSource,
+  StreamMode,
+  StreamType,
+  StreamDevice,
+  StreamStatus,
+  setLogLevel,
+} from 'ntgcalls';
 import type {
   ActiveCall,
   AudioFilterPreset,
   AudioSource,
   ChatRef,
+  DeviceInfo,
   EditParticipantOptions,
   JoinOptions,
   JoinResult,
   LoopMode,
   MTProtoAdapter,
+  MediaDevices,
+  MediaState,
   NativeRecordingOptions,
   PlaybackControls,
   PlaybackFilterOptions,
@@ -41,10 +55,12 @@ import { AlreadyInCallError, NoVoiceChatError } from './errors.js';
 import {
   AUDIO_FILTER_PRESETS,
   audioDescription,
+  deviceVideoDescription,
   videoDescription,
   recordingDescription,
   requireMediaExecutable,
   resolveAudioFilterExpression,
+  resolveDeviceMetadata,
   resolveYouTube,
   resolveYouTubeStreams,
   probeVideo,
@@ -381,20 +397,29 @@ export class TgCallsClient {
     const playback = controls
       ? { volume: controls.volume, speed: controls.speed, filter: controls.filter }
       : undefined;
-    const media: Record<string, unknown> = {
-      microphone: audioDescription(source, this.opts, playback),
-    };
+    const mic = source.kind === 'device' && source.microphone === false
+      ? undefined
+      : audioDescription(source, this.opts, playback);
+    const media: Record<string, unknown> = mic ? { microphone: mic } : {};
+    const deviceCamera = options.presentation !== true
+      && source.kind === 'device'
+      && (source.camera !== undefined || (options.video !== false && options.video !== undefined));
     const cameraVideo = options.presentation !== true
       && options.video !== false
       && options.video !== undefined
       && source.kind !== 'shell'
-      && source.kind !== 'external';
-    if (cameraVideo) {
+      && source.kind !== 'external'
+      && source.kind !== 'device';
+    if (deviceCamera) {
+      const targetOpts = typeof options.video === 'object' ? options.video : {};
+      media.camera = deviceVideoDescription('camera', source.camera, targetOpts);
+      this.videoState.set(chatId, { device: 'camera', target: targetOpts });
+    } else if (cameraVideo) {
       const srcPath = source.kind === 'file' ? source.path : source.url;
       const targetOpts = typeof options.video === 'object' ? options.video : {};
       const probed = await probeVideo(srcPath, this.opts, targetOpts);
       media.camera = videoDescription(
-        source as Exclude<AudioSource, { kind: 'shell' | 'external' }>,
+        source as Exclude<AudioSource, { kind: 'shell' | 'external' | 'device' }>,
         { ...probed, ...targetOpts, width: probed.width, height: probed.height, fps: probed.fps },
         this.opts,
         playback,
@@ -410,30 +435,38 @@ export class TgCallsClient {
       ...options,
       // videoStopped=false only when we actually share camera video.
       muted: options.muted === true,
-      videoStopped: !cameraVideo,
+      videoStopped: !(cameraVideo || deviceCamera),
     });
     await this.ntg.connect(chatId, connParams, false);
 
     let presentationActive = false;
-    if (options.presentation === true && source.kind !== 'shell' && source.kind !== 'external') {
+    const wantDeviceScreen = source.kind === 'device' && (options.presentation === true || source.screen !== undefined);
+    if (wantDeviceScreen || (options.presentation === true && source.kind !== 'shell' && source.kind !== 'external' && source.kind !== 'device')) {
       try {
-        const srcPath = source.kind === 'file' ? source.path : source.url;
         const targetOpts = typeof options.video === 'object' ? options.video : {};
-        const probed = await probeVideo(srcPath, this.opts, targetOpts);
-        const videoOpts: VideoOptions = {
-          ...probed,
-          ...targetOpts,
-          width: probed.width,
-          height: probed.height,
-          fps: probed.fps,
-        };
         const presParamsPayload = await this.ntg.initPresentation(chatId);
+        let screenDesc: unknown;
+        if (source.kind === 'device') {
+          screenDesc = deviceVideoDescription('screen', source.screen, targetOpts);
+        } else {
+          const srcPath = source.kind === 'file' ? source.path : source.url;
+          const probed = await probeVideo(srcPath, this.opts, targetOpts);
+          const videoOpts: VideoOptions = {
+            ...probed,
+            ...targetOpts,
+            width: probed.width,
+            height: probed.height,
+            fps: probed.fps,
+          };
+          screenDesc = videoDescription(source as Exclude<AudioSource, { kind: 'shell' | 'external' | 'device' }>, videoOpts, this.opts);
+        }
         // Camera and screen can't be mixed in ntgcalls: this call replaces the
         // camera with the screen channel (audio restarts together with it).
+        const presMic = audioDescription(source, this.opts);
         await this.ntg.setStreamSources(chatId, StreamMode.CAPTURE, {
-          microphone: audioDescription(source, this.opts),
-          screen: videoDescription(source as Exclude<AudioSource, { kind: 'shell' | 'external' }>, videoOpts, this.opts),
-        });
+          ...(presMic ? { microphone: presMic } : {}),
+          screen: screenDesc,
+        } as never);
         this.ended.delete(chatId);
         const presConnParams = await this.joinPresentationCall(inputCall, presParamsPayload);
         await this.ntg.connect(chatId, presConnParams, true);
@@ -450,7 +483,7 @@ export class TgCallsClient {
       call: inputCall,
       ssrc,
       source,
-      videoActive: !presentationActive && options.video !== false && options.video !== undefined && source.kind !== 'shell' && source.kind !== 'external',
+      videoActive: !presentationActive && (cameraVideo || deviceCamera),
       presentationActive,
       muted: options.muted === true,
       autoLeave: options.autoLeave !== false,
@@ -827,6 +860,78 @@ export class TgCallsClient {
     }
   }
 
+  /** List local hardware audio/video devices (microphone, speaker, camera, screen) detected by ntgcalls. */
+  static getMediaDevices(): MediaDevices {
+    return NTgCalls.getMediaDevices();
+  }
+
+  /** List local hardware audio/video devices detected by ntgcalls. */
+  getMediaDevices(): MediaDevices {
+    return NTgCalls.getMediaDevices();
+  }
+
+  /** Native ntgcalls binding health check (returns `"pong"`). */
+  static nativePing(): string {
+    return NTgCalls.ping();
+  }
+
+  /** Configure native ntgcalls C++ log verbosity (`LogLevel.DEBUG`..`LogLevel.SILENT`). */
+  static setNativeLogLevel(level: LogLevel): void {
+    setLogLevel(level);
+  }
+
+  /**
+   * Measure round-trip MTProto ping latency to Telegram in milliseconds
+   * (matching `pytgcalls.ping`). Falls back to `getSelfInfo()` on custom adapters.
+   */
+  async ping(): Promise<number> {
+    if (typeof this.adapter.ping === 'function') {
+      return await this.adapter.ping();
+    }
+    const start = performance.now();
+    if (typeof this.adapter.getSelfInfo === 'function') {
+      await this.adapter.getSelfInfo();
+    }
+    return Number((performance.now() - start).toFixed(2));
+  }
+
+  /** Native WebRTC CPU usage percentage reported by ntgcalls (`-1` when no active sampling window). */
+  async cpuUsage(): Promise<number> {
+    return await this.ntg.cpuUsage();
+  }
+
+  /** Native media state (`muted`, `videoPaused`, `videoStopped`, `presentationPaused`, `presentationStopped`). */
+  async getMediaState(chat: ChatRef | ConferenceHandle): Promise<MediaState | null> {
+    const { nativeId } = await this.resolveExternalTarget(chat);
+    try {
+      return await this.ntg.getState(nativeId);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Route incoming call audio directly to a local hardware speaker (`MediaSource.DEVICE`)
+   * so you can listen to a Telegram voice chat, P2P call, or conference on your computer.
+   */
+  async enableSpeakerOutput(
+    chat: ChatRef | ConferenceHandle,
+    speaker?: string | DeviceInfo,
+    options: { sampleRate?: number; channels?: 1 | 2 } = {},
+  ): Promise<void> {
+    const { nativeId } = await this.resolveExternalTarget(chat);
+    const input = resolveDeviceMetadata('speaker', speaker);
+    await this.ntg.setStreamSources(nativeId, StreamMode.PLAYBACK, {
+      microphone: {
+        mediaSource: MediaSource.DEVICE,
+        input,
+        sampleRate: options.sampleRate ?? 48000,
+        channelCount: options.channels ?? 2,
+        keepOpen: true,
+      },
+    });
+  }
+
   /**
    * Swap the audio source of an active call without leaving (queue support).
    * Use on streamEnd to start the next track in the same call.
@@ -846,15 +951,22 @@ export class TgCallsClient {
           ...(playback?.startSec !== undefined ? { startSec: playback.startSec } : {}),
         }
       : undefined;
-    const media: Record<string, unknown> = {
-      microphone: audioDescription(source, this.opts, effectivePlayback),
-    };
+    const mic = source.kind === 'device' && source.microphone === false
+      ? undefined
+      : audioDescription(source, this.opts, effectivePlayback);
+    const media: Record<string, unknown> = mic ? { microphone: mic } : {};
     // ntgcalls removes any device missing from the description, so rebuild the
     // video channel (camera/screen) from the new source or it would vanish.
     const vs = this.videoState.get(id);
     if (vs !== undefined) {
       if (source.kind === 'shell' || source.kind === 'external') {
         this.videoState.delete(id); // shell/external = audio-only, video channel ends
+      } else if (source.kind === 'device') {
+        media[vs.device] = deviceVideoDescription(
+          vs.device,
+          vs.device === 'screen' ? source.screen : source.camera,
+          vs.target,
+        );
       } else {
         const srcPath = source.kind === 'file' ? source.path : source.url;
         const probed = await probeVideo(srcPath, this.opts, vs.target);
@@ -1498,8 +1610,13 @@ export class TgCallsClient {
       prepareCapture: async (id, signal) => {
         signal.throwIfAborted();
         const media: import('ntgcalls').MediaDescription = {};
-        if (options.source) media.microphone = audioDescription(options.source, this.opts);
-        if (options.video && options.source && options.source.kind !== 'shell' && options.source.kind !== 'external') {
+        if (options.source) {
+          const mic = audioDescription(options.source, this.opts);
+          if (mic) {media.microphone = mic;}
+        }
+        if (options.source?.kind === 'device' && (options.source.camera !== undefined || options.video)) {
+          media.camera = deviceVideoDescription('camera', options.source.camera, options.video ?? {});
+        } else if (options.video && options.source && options.source.kind !== 'shell' && options.source.kind !== 'external' && options.source.kind !== 'device') {
           const input = options.source.kind === 'file' ? options.source.path : options.source.url;
           const probed = await probeVideo(input, this.opts, options.video);
           media.camera = videoDescription(options.source, { ...options.video, ...probed }, this.opts);
@@ -1825,24 +1942,31 @@ export class TgCallsClient {
     //    JoinGroupCallPresentation request itself.
     const params = await this.ntg.initPresentation(this.nativeGroupId(id));
     const active = this.calls.get(id);
-    const srcPath = source.kind === 'file' ? source.path : source.url;
-    const probed = await probeVideo(srcPath, this.opts, video);
-    const videoOpts: VideoOptions = {
-      ...probed,
-      ...video,
-      width: probed.width,
-      height: probed.height,
-      fps: probed.fps,
-    };
+    let screenDesc: unknown;
+    if (source.kind === 'device') {
+      screenDesc = deviceVideoDescription('screen', source.screen, video);
+    } else {
+      const srcPath = source.kind === 'file' ? source.path : source.url;
+      const probed = await probeVideo(srcPath, this.opts, video);
+      const videoOpts: VideoOptions = {
+        ...probed,
+        ...video,
+        width: probed.width,
+        height: probed.height,
+        fps: probed.fps,
+      };
+      screenDesc = videoDescription(source, videoOpts, this.opts);
+    }
     // Idle calls (joinIdle) carry an empty shell source: don't start it as audio.
     const hasAudio = active?.source !== undefined
       && !(active.source.kind === 'shell' && active.source.command === '');
+    const presMic = hasAudio && active ? audioDescription(active.source, this.opts) : undefined;
     // Camera and screen can't be mixed in ntgcalls, so the screen replaces the
     // camera. Audio is re-sent so it restarts in sync with the screen video.
     await this.ntg.setStreamSources(this.nativeGroupId(id), StreamMode.CAPTURE, {
-      ...(hasAudio && active ? { microphone: audioDescription(active.source, this.opts) } : {}),
-      screen: videoDescription(source, videoOpts, this.opts),
-    });
+      ...(presMic ? { microphone: presMic } : {}),
+      screen: screenDesc,
+    } as never);
     this.ended.delete(id);
     // 3) MTProto presentation join; connect on the presentation channel
     const connParams = await this.joinPresentationCall(this.calls.get(id)?.call, params);
@@ -2104,6 +2228,8 @@ export { loadTl, resetTlCache, loadEvents } from './tl.js';
 export {
   AUDIO_FILTER_PRESETS,
   resolveAudioFilterExpression,
+  resolveDeviceMetadata,
+  deviceVideoDescription,
   resolveYouTube,
   resolveYouTubeStreams,
   pcmCommand,
@@ -2111,6 +2237,7 @@ export {
   videoDescription,
   probeVideo,
 } from './media.js';
+export { LogLevel } from 'ntgcalls';
 export { P2PCallManager } from './calls.js';
 export type { ListenCallsOptions, OutgoingCallOptions, CallRecordOptions, CallRecordingStopped } from './calls.js';
 export { VideoQuality } from './types.js';
@@ -2119,6 +2246,7 @@ export type {
   AudioFilterPreset,
   AudioSource,
   ChatRef,
+  DeviceInfo,
   EditParticipantOptions,
   JoinOptions,
   JoinResult,
@@ -2126,6 +2254,8 @@ export type {
   MTProtoLike,
   MtcuteLike,
   MTProtoAdapter,
+  MediaDevices,
+  MediaState,
   NativeRecordingOptions,
   PlaybackControls,
   PlaybackFilterOptions,

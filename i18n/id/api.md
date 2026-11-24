@@ -81,6 +81,15 @@ new TgCallsClient(options: TgCallsOptions)
 - `pushVideoFrame(chat | handle, i420, options): Promise<void>`
 - Helper murni: `resamplePcmS16le()`, `computePcmRms()`, `i420ToBmp()`, `slicePcm10ms()`
 
+#### Perangkat Hardware Lokal & Diagnostik
+- `getMediaDevices()` / `TgCallsClient.getMediaDevices(): MediaDevices` — daftar mikrofon, speaker, webcam, dan monitor lokal
+- `{ kind: 'device', microphone?, camera?, screen? }` — tangkap mikrofon, webcam (`MediaSource.DEVICE`), dan layar monitor (`MediaSource.DESKTOP`) langsung tanpa `ffmpeg`
+- `enableSpeakerOutput(chat | handle, speaker?, opts?): Promise<void>` — putar suara panggilan langsung ke speaker komputer lokal
+- `ping(): Promise<number>` — ukur latensi RTT MTProto asli ke server Telegram (ms)
+- `cpuUsage(): Promise<number>` — cek pemakaian CPU WebRTC native `ntgcalls`
+- `getMediaState(chat | handle): Promise<MediaState | null>` — status mute/video/presentasi native
+- `TgCallsClient.nativePing(): string` (`"pong"`) & `TgCallsClient.setNativeLogLevel(level)`
+
 #### Panggilan P2P, Perekaman, RTMP, Konferensi E2E & Persistensi
 - **P2P:** `getCallDenialReason(user, opts?)`, `canRequestCall(user, opts?)`, `listenCalls(opts)`, `callUser(user, opts?)`, `stopListeningCalls()`, `activeCallPeers()`, `getEmojiFingerprint(chat | handle)`
 - **Perekaman:** `startRecording(chat, path | { dir, video? }, opts?)`, `stopRecording(chat)`, `getRecording(chat)`, `isRecording(chat)`

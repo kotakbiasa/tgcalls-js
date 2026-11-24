@@ -46,6 +46,8 @@ export interface MTProtoAdapter {
 
   // --- Group metadata, participants, broadcast stream, and conference (#18/#20/#21) ---
   getSelfInfo?(): Promise<{ userId: bigint; isBot: boolean; authorized: boolean }>;
+  /** Measure round-trip MTProto ping latency to Telegram in milliseconds. */
+  ping?(): Promise<number>;
   getGroupCallInfo?(call: unknown, signal?: AbortSignal): Promise<GroupCallInfo>;
   getParticipants?(
     call: unknown,

@@ -19,7 +19,7 @@ import { NTgCalls, StreamMode, MediaSource, ConnectionState, StreamDevice } from
 import type { MTProtoAdapter } from './adapters/types.js';
 import type { AudioSource, TgCallsOptions, VideoOptions } from './types.js';
 import { asBigInt0 } from './adapters/utils.js';
-import { audioDescription, probeVideo, recordingDescription, videoDescription } from './media.js';
+import { audioDescription, deviceVideoDescription, probeVideo, recordingDescription, videoDescription } from './media.js';
 import type { NativeEventRouter } from './native-events.js';
 
 export interface ListenCallsOptions {
@@ -317,8 +317,12 @@ export class P2PCallManager {
       await this.ntg.createP2pCall(peerId);
       step('createP2pCall ok');
       const mediaOpts = { client: {} as never, ffmpegPath: this.opts.ffmpegPath, ffprobePath: this.opts.ffprobePath } as TgCallsOptions;
-      const media: Record<string, unknown> = { microphone: audioDescription(this.opts.source, mediaOpts) };
-      if (this.opts.video && this.opts.source.kind !== 'shell' && this.opts.source.kind !== 'external') {
+      const mic = audioDescription(this.opts.source, mediaOpts);
+      const media: Record<string, unknown> = mic ? { microphone: mic } : {};
+      if (this.opts.source.kind === 'device' && (this.opts.source.camera !== undefined || this.opts.video)) {
+        const targetOpts = typeof this.opts.video === 'object' ? this.opts.video : {};
+        media.camera = deviceVideoDescription('camera', this.opts.source.camera, targetOpts);
+      } else if (this.opts.video && this.opts.source.kind !== 'shell' && this.opts.source.kind !== 'external' && this.opts.source.kind !== 'device') {
         const targetOpts = typeof this.opts.video === 'object' ? this.opts.video : {};
         const srcPath = this.opts.source.kind === 'file' ? this.opts.source.path : this.opts.source.url;
         const probed = await probeVideo(srcPath, mediaOpts, targetOpts);
@@ -390,8 +394,12 @@ export class P2PCallManager {
     try {
       await this.ntg.createP2pCall(userId);
       nativeCreated = true;
-      const media: Record<string, unknown> = { microphone: audioDescription(this.opts.source, mediaOpts) };
-      if (wantVideo && this.opts.source.kind !== 'shell' && this.opts.source.kind !== 'external') {
+      const mic = audioDescription(this.opts.source, mediaOpts);
+      const media: Record<string, unknown> = mic ? { microphone: mic } : {};
+      if (this.opts.source.kind === 'device' && (this.opts.source.camera !== undefined || wantVideo)) {
+        const targetOpts = typeof opts.video === 'object' ? opts.video : {};
+        media.camera = deviceVideoDescription('camera', this.opts.source.camera, targetOpts);
+      } else if (wantVideo && this.opts.source.kind !== 'shell' && this.opts.source.kind !== 'external' && this.opts.source.kind !== 'device') {
         const targetOpts = typeof opts.video === 'object' ? opts.video : {};
         const srcPath = this.opts.source.kind === 'file' ? this.opts.source.path : this.opts.source.url;
         const probed = await probeVideo(srcPath, mediaOpts, targetOpts);

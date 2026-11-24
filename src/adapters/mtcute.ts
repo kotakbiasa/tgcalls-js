@@ -385,6 +385,21 @@ export class MtcuteAdapter implements MTProtoAdapter {
     }
   }
 
+  async ping(): Promise<number> {
+    const start = performance.now();
+    try {
+      await this.client.call({
+        _: 'ping',
+        pingId: MtcuteAdapter.longOf(BigInt(Math.floor(Math.random() * 1e12))),
+      });
+    } catch {
+      if (typeof this.client.getMe === 'function') {
+        await this.client.getMe();
+      }
+    }
+    return Number((performance.now() - start).toFixed(2));
+  }
+
   async getGroupCallInfo(call: unknown, signal?: AbortSignal): Promise<GroupCallInfo> {
     const inputCall = this.toInputGroupCall(call);
     const res = (await this.callWithSignal(

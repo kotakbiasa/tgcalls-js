@@ -3,8 +3,10 @@
  */
 
 import type { PeerIdentity } from './participants.js';
-import type { StreamDevice, StreamStatus } from 'ntgcalls';
+import type { DeviceInfo, MediaDevices, MediaState, StreamDevice, StreamStatus } from 'ntgcalls';
 import type { ResumeControllerOptions, StateStoreOptions } from './persistence.js';
+
+export type { DeviceInfo, MediaDevices, MediaState };
 
 /** Reference to a chat: username, t.me link, raw id, or marked id (-100...). */
 export type ChatRef = string | number | bigint;
@@ -51,7 +53,20 @@ export type AudioSource =
    * Real-time programmatic PCM audio source (ntgcalls MediaSource.EXTERNAL).
    * Feed PCM frames with `client.pushAudioFrame(chat, pcm)` — no ffmpeg required.
    */
-  | { kind: 'external'; sampleRate?: number; channels?: 1 | 2; keepOpen?: boolean };
+  | { kind: 'external'; sampleRate?: number; channels?: 1 | 2; keepOpen?: boolean }
+  /**
+   * Local hardware capture source (ntgcalls MediaSource.DEVICE / MediaSource.DESKTOP).
+   * Pass `'default'`, a device name, a `DeviceInfo` from `getMediaDevices()`, or raw metadata JSON.
+   * No ffmpeg required.
+   */
+  | {
+      kind: 'device';
+      microphone?: string | DeviceInfo | false;
+      camera?: string | DeviceInfo;
+      screen?: string | DeviceInfo;
+      sampleRate?: number;
+      channels?: 1 | 2;
+    };
 
 /** Video stream parameters. */
 export interface VideoOptions {

@@ -15,7 +15,7 @@ export interface RtmpPublisherOptions {
   spawn?: (command: string, args: string[]) => ChildProcess;
 }
 export class RtmpPublisherError extends TgCallsError {}
-interface Track { source: Exclude<AudioSource, { kind: 'shell' | 'external' }>; video?: VideoOptions }
+interface Track { source: Exclude<AudioSource, { kind: 'shell' | 'external' | 'device' }>; video?: VideoOptions }
 interface Run {
   child: ChildProcess;
   done: Promise<void>;
@@ -112,7 +112,9 @@ export class RtmpPublisher {
   async close(): Promise<void> { this.closed = true; await this.halt(true); }
 
   private validate(source: AudioSource, video?: VideoOptions): Track {
-    if (source.kind === 'shell' || source.kind === 'external') throw new RtmpPublisherError('RTMP requires a file or URL source; PCM shell/external sources have no video/container contract');
+    if (source.kind === 'shell' || source.kind === 'external' || source.kind === 'device') {
+      throw new RtmpPublisherError('RTMP requires a file or URL source; PCM shell/external/device sources have no video/container contract');
+    }
     const input = source.kind === 'file' ? source.path : source.url;
     if (!input || /[\0\r\n]/.test(input)) throw new RtmpPublisherError('Invalid RTMP media source');
     if (source.kind === 'url' && source.audioUrl !== undefined && (!source.audioUrl || /[\0\r\n]/.test(source.audioUrl))) throw new RtmpPublisherError('Invalid audio URL');

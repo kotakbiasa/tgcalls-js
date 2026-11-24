@@ -327,6 +327,16 @@ export class GramjsAdapter implements MTProtoAdapter {
     }
   }
 
+  async ping(): Promise<number> {
+    const start = performance.now();
+    if (this.Api.Ping) {
+      await this.client.invoke(new this.Api.Ping({ pingId: BigInt(Math.floor(Math.random() * 1e12)) }));
+    } else if (typeof this.client.getMe === 'function') {
+      await this.client.getMe();
+    }
+    return Number((performance.now() - start).toFixed(2));
+  }
+
   async getGroupCallInfo(call: unknown, signal?: AbortSignal): Promise<GroupCallInfo> {
     const inputCall = this.toInputGroupCall(call);
     const res = (await this.invokeWithSignal(
