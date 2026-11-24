@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1280" y2="640" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#070B14"/>
+      <stop offset="50%" stop-color="#0F172A"/>
+      <stop offset="100%" stop-color="#082F49"/>
+    </linearGradient>
+    <radialGradient id="glowLeft" cx="20%" cy="50%" r="55%">
+      <stop offset="0%" stop-color="#0284C7" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#0284C7" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowRight" cx="85%" cy="25%" r="50%">
+      <stop offset="0%" stop-color="#38BDF8" stop-opacity="0.22"/>
+      <stop offset="100%" stop-color="#38BDF8" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="iconBg" x1="110" y1="180" x2="366" y2="460" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0F172A"/>
+      <stop offset="52%" stop-color="#0C4A6E"/>
+      <stop offset="100%" stop-color="#0284C7"/>
+    </linearGradient>
+    <linearGradient id="wave" x1="150" y1="360" x2="225" y2="430" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#7DD3FC"/>
+      <stop offset="100%" stop-color="#38BDF8"/>
+    </linearGradient>
+    <linearGradient id="planeTop" x1="175" y1="225" x2="335" y2="355" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#E0F2FE"/>
+    </linearGradient>
+    <linearGradient id="planeShadow" x1="210" y1="315" x2="310" y2="380" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#BAE6FD"/>
+      <stop offset="100%" stop-color="#7DD3FC"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Canvas background -->
+  <rect width="1280" height="640" fill="url(#bg)"/>
+  <rect width="1280" height="640" fill="url(#glowLeft)"/>
+  <rect width="1280" height="640" fill="url(#glowRight)"/>
+
+  <!-- Subtle outer frame -->
+  <rect x="28" y="28" width="1224" height="584" rx="28" stroke="#38BDF8" stroke-opacity="0.18" stroke-width="2"/>
+
+  <!-- Left Logo Icon (240x240 centered vertically at x=88..328, y=200..440) -->
+  <g transform="translate(88, 200) scale(0.46875)">
+    <rect x="20" y="20" width="472" height="472" rx="112" fill="url(#iconBg)"/>
+    <rect x="22" y="22" width="468" height="468" rx="110" stroke="#38BDF8" stroke-opacity="0.35" stroke-width="6"/>
+    <rect x="92" y="352" width="22" height="52" rx="11" fill="url(#wave)" fill-opacity="0.82"/>
+    <rect x="128" y="324" width="22" height="96" rx="11" fill="url(#wave)"/>
+    <rect x="164" y="346" width="22" height="66" rx="11" fill="url(#wave)" fill-opacity="0.9"/>
+    <rect x="200" y="368" width="22" height="36" rx="11" fill="url(#wave)" fill-opacity="0.72"/>
+    <path d="M120 226.5L388 122C399.5 117.5 410.5 128 406.5 139.8L343.5 344.5C339.8 356.5 324.6 360.8 315.2 352.6L255.5 300.5L218 334.5C212.5 339.5 203.5 336.2 202.5 328.8L196 277.5L122 248.5C110.2 243.8 109.5 230.6 120 226.5Z" fill="url(#planeTop)"/>
+    <path d="M196 277.5L362 162L242 289.5L255.5 300.5L218 334.5C212.5 339.5 203.5 336.2 202.5 328.8L196 277.5Z" fill="url(#planeShadow)"/>
+    <path d="M242 289.5L362 162L255.5 300.5L242 289.5Z" fill="#38BDF8" fill-opacity="0.45"/>
+    <path d="M118 164C126 138 148 118 175 112" stroke="#7DD3FC" stroke-width="12" stroke-linecap="round" stroke-opacity="0.75"/>
+    <path d="M92 156C104 118 134 90 172 82" stroke="#38BDF8" stroke-width="10" stroke-linecap="round" stroke-opacity="0.4"/>
+  </g>
+
+  <!-- Right Typography & Badges -->
+  <text x="368" y="252" fill="#FFFFFF" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="72" font-weight="800" letter-spacing="-1.5">tgcalls-js</text>
+  <rect x="752" y="204" width="108" height="42" rx="21" fill="#0284C7" fill-opacity="0.25" stroke="#38BDF8" stroke-opacity="0.5" stroke-width="2"/>
+  <text x="806" y="232" fill="#7DD3FC" font-family="Inter, system-ui, sans-serif" font-size="22" font-weight="700" text-anchor="middle">v0.4.0</text>
+
+  <text x="368" y="312" fill="#BAE6FD" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="25" font-weight="600">Telegram Voice, Video, P2P, RTMP &amp; Gemini Live SDK for Node.js</text>
+  <text x="368" y="358" fill="#94A3B8" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="21" font-weight="400">Built on ntgcalls (C++ WebRTC) • teleproto • GramJS • @mtcute/node</text>
+
+  <!-- Feature Pills -->
+  <g font-family="Inter, system-ui, sans-serif" font-size="18" font-weight="600" fill="#E0F2FE">
+    <rect x="368" y="400" width="180" height="44" rx="12" fill="#0F172A" stroke="#38BDF8" stroke-opacity="0.35" stroke-width="1.5"/>
+    <text x="458" y="428" text-anchor="middle">Group &amp; P2P Calls</text>
+
+    <rect x="564" y="400" width="180" height="44" rx="12" fill="#0F172A" stroke="#38BDF8" stroke-opacity="0.35" stroke-width="1.5"/>
+    <text x="654" y="428" text-anchor="middle">Gemini Live AI</text>
+
+    <rect x="760" y="400" width="176" height="44" rx="12" fill="#0F172A" stroke="#38BDF8" stroke-opacity="0.35" stroke-width="1.5"/>
+    <text x="848" y="428" text-anchor="middle">Folder Recording</text>
+
+    <rect x="952" y="400" width="188" height="44" rx="12" fill="#0F172A" stroke="#38BDF8" stroke-opacity="0.35" stroke-width="1.5"/>
+    <text x="1046" y="428" text-anchor="middle">RTMP &amp; E2E Conf</text>
+  </g>
+</svg>
